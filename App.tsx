@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Animated, BackHandler, Dimensions, SafeAreaView, StyleSheet, View,
+  Animated, BackHandler, Dimensions, StyleSheet, View,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import {
   useFonts,
   SpaceGrotesk_400Regular,
@@ -29,11 +30,11 @@ SplashScreen.preventAutoHideAsync();
 const { width: W } = Dimensions.get('window');
 type UserData = Record<string, string> | null;
 
-export default function App() {
-  const [step, setStep]         = useState(0);
-  const [serverUrl, setSrv]     = useState('http://192.168.1.100:5000');
+function AppInner() {
+  const [step, setStep]           = useState(0);
+  const [serverUrl, setSrv]       = useState('http://192.168.1.100:5000');
   const [savedUsername, setSaved] = useState('');
-  const [userData, setData]     = useState<UserData>(null);
+  const [userData, setData]       = useState<UserData>(null);
   const [settingsLoaded, setLoaded] = useState(false);
 
   const slideAnim = useRef(new Animated.Value(0)).current;
@@ -47,14 +48,9 @@ export default function App() {
     JetBrainsMono_500Medium,
   });
 
-  // Load saved server URL + username on startup
   useEffect(() => {
     loadSettings().then(({ serverUrl: url, username }) => {
-      if (url) {
-        setSrv(url);
-        setSaved(username);
-        setStep(2); // skip welcome + server screens, go straight to login
-      }
+      if (url) { setSrv(url); setSaved(username); setStep(2); }
       setLoaded(true);
     });
   }, []);
@@ -73,7 +69,7 @@ export default function App() {
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
       if (step === 1) { goTo(0); return true; }
-      if (step === 2) { goTo(step === 2 && savedUsername ? 0 : 1); return true; }
+      if (step === 2) { goTo(savedUsername ? 0 : 1); return true; }
       return false;
     });
     return () => sub.remove();
@@ -111,12 +107,7 @@ export default function App() {
       case 4: return (
         <HomeScreen
           serverUrl={serverUrl} userData={userData}
-          onLogout={() => {
-            clearSettings();
-            setData(null);
-            setSaved('');
-            goTo(0);
-          }}
+          onLogout={() => { clearSettings(); setData(null); setSaved(''); goTo(0); }}
         />
       );
       default: return null;
@@ -125,13 +116,24 @@ export default function App() {
 
   return (
     <View style={styles.root} onLayout={onLayoutRootView}>
-      <StatusBar style="light" backgroundColor={C.bg} />
-      <SafeAreaView style={styles.safe}>
-        <Animated.View style={[styles.slide, { transform: [{ translateX: slideAnim }] }]} key={step}>
+      <StatusBar style="light" backgroundColor={C.bg} translucent={false} />
+      <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
+        <Animated.View
+          style={[styles.slide, { transform: [{ translateX: slideAnim }] }]}
+          key={step}
+        >
           {renderScreen()}
         </Animated.View>
       </SafeAreaView>
     </View>
+  );
+}
+
+export default function App() {
+  return (
+    <SafeAreaProvider>
+      <AppInner />
+    </SafeAreaProvider>
   );
 }
 
