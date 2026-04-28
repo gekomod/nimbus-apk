@@ -29,20 +29,24 @@ export default function LoginScreen({ onBack, onSuccess, serverUrl, savedUsernam
     setError(''); setLoad(true);
     try {
       const base = serverUrl.startsWith('http') ? serverUrl : 'http://' + serverUrl;
-      const body = new URLSearchParams({ username: user, password: pass }).toString();
-      const res = await fetch(`${base.replace(/\/+$/, '')}/api/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body,
-      });
-      const data = await res.json().catch(() => ({}));
+      const url = `${base.replace(/\/+$/, '')}/api/login`;
+
+      const formData = new FormData();
+      formData.append('username', user);
+      formData.append('password', pass);
+
+      const res = await fetch(url, { method: 'POST', body: formData });
+      const text = await res.text();
+      let data: Record<string, string> = {};
+      try { data = JSON.parse(text); } catch { data = { raw: text }; }
+
       if (res.ok) {
         onSuccess({ ...data, username: user });
       } else {
-        setError(data.message || data.error || 'Nieprawidłowe dane logowania');
+        setError(`HTTP ${res.status}: ${data.message || data.error || data.raw || 'Błąd logowania'}`);
       }
-    } catch {
-      setError('Nie można połączyć z serwerem');
+    } catch (e: any) {
+      setError(`Błąd połączenia: ${e?.message ?? 'nieznany'}`);
     } finally {
       setLoad(false);
     }
@@ -93,7 +97,7 @@ export default function LoginScreen({ onBack, onSuccess, serverUrl, savedUsernam
             <Text style={styles.endpointText}>
               <Text style={{ color: C.accent }}>POST</Text>
               {' '}{display}/api/login{'\n'}
-              <Text style={{ color: C.textMute }}>{'application/x-www-form-urlencoded'}</Text>
+              <Text style={{ color: C.textMute }}>{'multipart/form-data  { username, password }'}</Text>
             </Text>
           </View>
         </ScrollView>
