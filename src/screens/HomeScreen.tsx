@@ -79,7 +79,10 @@ function DisksTab({ serverUrl, userData }: { serverUrl: string; userData: Record
       const base = serverUrl.startsWith('http') ? serverUrl : 'http://' + serverUrl;
       const headers: Record<string, string> = {};
       if (userData?.token) headers['Authorization'] = `Bearer ${userData.token}`;
-      const res = await fetch(`${base.replace(/\/+$/, '')}/api/zfs/pools`, { headers });
+      const res = await fetch(`${base.replace(/\/+$/, '')}/api/zfs/pools`, {
+        headers,
+        credentials: 'include',
+      });
       const json = await res.json();
       setPools(json.pools ?? []);
     } catch {

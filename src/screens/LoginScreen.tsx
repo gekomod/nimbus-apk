@@ -31,9 +31,9 @@ export default function LoginScreen({ onBack, onSuccess, serverUrl, savedUsernam
       const base = serverUrl.startsWith('http') ? serverUrl : 'http://' + serverUrl;
       const url = `${base.replace(/\/+$/, '')}/api/login`;
 
-      // Try JSON first
       const res = await fetch(url, {
         method: 'POST',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: user, password: pass }),
       });
