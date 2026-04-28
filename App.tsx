@@ -21,18 +21,20 @@ import ServerScreen   from './src/screens/ServerScreen';
 import LoginScreen    from './src/screens/LoginScreen';
 import SuccessScreen  from './src/screens/SuccessScreen';
 import HomeScreen     from './src/screens/HomeScreen';
+import { loadSettings, saveSettings, clearSettings } from './src/storage';
 import { C } from './src/tokens';
 
 SplashScreen.preventAutoHideAsync();
 
 const { width: W } = Dimensions.get('window');
-
 type UserData = Record<string, string> | null;
 
 export default function App() {
-  const [step, setStep]     = useState(0);
-  const [serverUrl, setSrv] = useState('http://192.168.1.100:5000');
-  const [userData, setData] = useState<UserData>(null);
+  const [step, setStep]         = useState(0);
+  const [serverUrl, setSrv]     = useState('http://192.168.1.100:5000');
+  const [savedUsername, setSaved] = useState('');
+  const [userData, setData]     = useState<UserData>(null);
+  const [settingsLoaded, setLoaded] = useState(false);
 
   const slideAnim = useRef(new Animated.Value(0)).current;
 
@@ -45,33 +47,39 @@ export default function App() {
     JetBrainsMono_500Medium,
   });
 
+  // Load saved server URL + username on startup
+  useEffect(() => {
+    loadSettings().then(({ serverUrl: url, username }) => {
+      if (url) {
+        setSrv(url);
+        setSaved(username);
+        setStep(2); // skip welcome + server screens, go straight to login
+      }
+      setLoaded(true);
+    });
+  }, []);
+
   const onLayoutRootView = useCallback(async () => {
-    if (fontsLoaded) await SplashScreen.hideAsync();
-  }, [fontsLoaded]);
+    if (fontsLoaded && settingsLoaded) await SplashScreen.hideAsync();
+  }, [fontsLoaded, settingsLoaded]);
 
   function goTo(next: number) {
     const dir = next > step ? 1 : -1;
     slideAnim.setValue(dir * W);
     setStep(next);
-    Animated.spring(slideAnim, {
-      toValue: 0,
-      tension: 80,
-      friction: 14,
-      useNativeDriver: true,
-    }).start();
+    Animated.spring(slideAnim, { toValue: 0, tension: 80, friction: 14, useNativeDriver: true }).start();
   }
 
-  // Hardware back button (Android)
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
       if (step === 1) { goTo(0); return true; }
-      if (step === 2) { goTo(1); return true; }
+      if (step === 2) { goTo(step === 2 && savedUsername ? 0 : 1); return true; }
       return false;
     });
     return () => sub.remove();
-  }, [step]);
+  }, [step, savedUsername]);
 
-  if (!fontsLoaded) return null;
+  if (!fontsLoaded || !settingsLoaded) return null;
 
   function renderScreen() {
     switch (step) {
@@ -84,9 +92,14 @@ export default function App() {
       );
       case 2: return (
         <LoginScreen
-          onBack={() => goTo(1)}
-          onSuccess={d => { setData(d); goTo(3); }}
+          onBack={() => { savedUsername ? goTo(0) : goTo(1); }}
+          onSuccess={d => {
+            setData(d);
+            saveSettings(serverUrl, d.username || savedUsername);
+            goTo(3);
+          }}
           serverUrl={serverUrl}
+          savedUsername={savedUsername}
         />
       );
       case 3: return (
@@ -98,7 +111,12 @@ export default function App() {
       case 4: return (
         <HomeScreen
           serverUrl={serverUrl} userData={userData}
-          onLogout={() => { setData(null); goTo(0); }}
+          onLogout={() => {
+            clearSettings();
+            setData(null);
+            setSaved('');
+            goTo(0);
+          }}
         />
       );
       default: return null;
@@ -109,10 +127,7 @@ export default function App() {
     <View style={styles.root} onLayout={onLayoutRootView}>
       <StatusBar style="light" backgroundColor={C.bg} />
       <SafeAreaView style={styles.safe}>
-        <Animated.View
-          style={[styles.slide, { transform: [{ translateX: slideAnim }] }]}
-          key={step}
-        >
+        <Animated.View style={[styles.slide, { transform: [{ translateX: slideAnim }] }]} key={step}>
           {renderScreen()}
         </Animated.View>
       </SafeAreaView>
@@ -121,15 +136,7 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
-  root: {
-    flex: 1,
-    backgroundColor: C.bg,
-  },
-  safe: {
-    flex: 1,
-    backgroundColor: C.bg,
-  },
-  slide: {
-    flex: 1,
-  },
+  root: { flex: 1, backgroundColor: C.bg },
+  safe: { flex: 1, backgroundColor: C.bg },
+  slide: { flex: 1 },
 });
