@@ -31,11 +31,13 @@ export default function LoginScreen({ onBack, onSuccess, serverUrl, savedUsernam
       const base = serverUrl.startsWith('http') ? serverUrl : 'http://' + serverUrl;
       const url = `${base.replace(/\/+$/, '')}/api/login`;
 
-      const formData = new FormData();
-      formData.append('username', user);
-      formData.append('password', pass);
+      // Try JSON first
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: user, password: pass }),
+      });
 
-      const res = await fetch(url, { method: 'POST', body: formData });
       const text = await res.text();
       let data: Record<string, string> = {};
       try { data = JSON.parse(text); } catch { data = { raw: text }; }
@@ -43,7 +45,7 @@ export default function LoginScreen({ onBack, onSuccess, serverUrl, savedUsernam
       if (res.ok) {
         onSuccess({ ...data, username: user });
       } else {
-        setError(`HTTP ${res.status}: ${data.message || data.error || data.raw || 'Błąd logowania'}`);
+        setError(`HTTP ${res.status}: ${data.message || data.error || data.detail || data.raw || 'Błąd logowania'}`);
       }
     } catch (e: any) {
       setError(`Błąd połączenia: ${e?.message ?? 'nieznany'}`);
