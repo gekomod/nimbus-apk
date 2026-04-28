@@ -8,6 +8,16 @@ import { C, FONTS } from '../tokens';
 
 // ── Types ─────────────────────────────────────────────────────
 
+interface NetInterface {
+  Name: string;
+  RxB: number;
+  TxB: number;
+  State: string;
+  IP: string;
+  MAC: string;
+  Speed: string;
+}
+
 interface Pool {
   name: string;
   type: string;
@@ -21,6 +31,14 @@ interface Pool {
 }
 
 // ── Helpers ───────────────────────────────────────────────────
+
+function formatBytes(b: number): string {
+  if (b >= 1e12) return `${(b / 1e12).toFixed(2)} TB`;
+  if (b >= 1e9)  return `${(b / 1e9).toFixed(1)} GB`;
+  if (b >= 1e6)  return `${(b / 1e6).toFixed(1)} MB`;
+  if (b >= 1e3)  return `${(b / 1e3).toFixed(0)} KB`;
+  return `${b} B`;
+}
 
 function formatSize(gb: number): string {
   if (gb >= 1000) return `${(gb / 1000).toFixed(1)} TB`;
@@ -150,7 +168,7 @@ function DisksTab({ serverUrl, userData }: { serverUrl: string; userData: Record
             </View>
 
             {/* I/O stats */}
-            <View style={styles.ioRow}>
+            <View style={styles.netIoRow}>
               <Text style={styles.ioStat}>↓ {fmt(d.read_mbps)} MB/s</Text>
               <Text style={styles.ioStat}>↑ {fmt(d.write_mbps)} MB/s</Text>
               <Text style={styles.ioStat}>IOPS: {d.iops}</Text>
@@ -206,6 +224,138 @@ function FilesTab() {
   );
 }
 
+// ── Network tab ───────────────────────────────────────────────
+
+function NetworkTab({ serverUrl, userData }: { serverUrl: string; userData: Record<string, string> | null }) {
+  const [hostname, setHostname]     = useState('');
+  const [ifaces, setIfaces]         = useState<NetInterface[]>([]);
+  const [loading, setLoading]       = useState(true);
+  const [error, setError]           = useState('');
+  const [refreshing, setRefresh]    = useState(false);
+
+  const fetchNet = useCallback(async (isRefresh = false) => {
+    isRefresh ? setRefresh(true) : setLoading(true);
+    setError('');
+    try {
+      const base = serverUrl.startsWith('http') ? serverUrl : 'http://' + serverUrl;
+      const headers: Record<string, string> = {};
+      if (userData?.token) headers['Authorization'] = `Bearer ${userData.token}`;
+      const res = await fetch(`${base.replace(/\/+$/, '')}/api/network`, {
+        headers,
+        credentials: 'include',
+      });
+      const json = await res.json();
+      setHostname(json.hostname ?? '');
+      setIfaces(json.interfaces ?? []);
+    } catch {
+      setError('Nie można pobrać danych sieciowych');
+    } finally {
+      setLoading(false);
+      setRefresh(false);
+    }
+  }, [serverUrl, userData]);
+
+  useEffect(() => { fetchNet(); }, [fetchNet]);
+
+  if (loading) {
+    return (
+      <View style={styles.center}>
+        <Spinner size={28} color={C.accent} />
+        <Text style={styles.loadingText}>Ładowanie sieci…</Text>
+      </View>
+    );
+  }
+
+  if (error) {
+    return (
+      <View style={styles.center}>
+        <Text style={styles.errorText}>{error}</Text>
+        <TouchableOpacity onPress={() => fetchNet()} style={styles.retryBtn}>
+          <Text style={styles.retryText}>Spróbuj ponownie</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  return (
+    <ScrollView
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => fetchNet(true)} tintColor={C.accent} />}
+    >
+      {/* Hostname */}
+      {hostname ? (
+        <View style={styles.hostnameRow}>
+          <Text style={styles.hostnameLabel}>HOSTNAME</Text>
+          <Text style={styles.hostnameVal}>{hostname}</Text>
+        </View>
+      ) : null}
+
+      {ifaces.map(iface => {
+        const isUp = iface.State === 'up';
+        return (
+          <View key={iface.Name} style={[styles.ifaceCard, !isUp && styles.ifaceCardDown]}>
+            {/* Header row */}
+            <View style={styles.ifaceHeader}>
+              <View style={styles.ifaceNameRow}>
+                <View style={[styles.ifaceDot, { backgroundColor: isUp ? C.green : C.textMute }]} />
+                <Text style={styles.ifaceName}>{iface.Name}</Text>
+                {iface.Speed ? (
+                  <View style={styles.speedBadge}>
+                    <Text style={styles.speedText}>{iface.Speed}</Text>
+                  </View>
+                ) : null}
+              </View>
+              <View style={[styles.stateBadge, !isUp && styles.stateBadgeDown]}>
+                <Text style={[styles.stateText, !isUp && styles.stateTextDown]}>
+                  {iface.State.toUpperCase()}
+                </Text>
+              </View>
+            </View>
+
+            {/* IP + MAC */}
+            {(iface.IP || iface.MAC) ? (
+              <View style={styles.ifaceMeta}>
+                {iface.IP ? (
+                  <View style={styles.metaRow}>
+                    <Text style={styles.metaKey}>IP</Text>
+                    <Text style={styles.metaVal}>{iface.IP}</Text>
+                  </View>
+                ) : null}
+                {iface.MAC && iface.MAC !== '00:00:00:00:00:00' ? (
+                  <View style={styles.metaRow}>
+                    <Text style={styles.metaKey}>MAC</Text>
+                    <Text style={styles.metaVal}>{iface.MAC}</Text>
+                  </View>
+                ) : null}
+              </View>
+            ) : null}
+
+            {/* RX / TX — only if interface is up */}
+            {isUp && (iface.RxB > 0 || iface.TxB > 0) ? (
+              <View style={styles.netIoRow}>
+                <View style={styles.netIoItem}>
+                  <Text style={styles.netIoArrow}>↓</Text>
+                  <View>
+                    <Text style={styles.netIoLabel}>Odebrane</Text>
+                    <Text style={styles.netIoVal}>{formatBytes(iface.RxB)}</Text>
+                  </View>
+                </View>
+                <View style={styles.netIoDivider} />
+                <View style={styles.netIoItem}>
+                  <Text style={[styles.netIoArrow, { color: C.accent }]}>↑</Text>
+                  <View>
+                    <Text style={styles.netIoLabel}>Wysłane</Text>
+                    <Text style={styles.netIoVal}>{formatBytes(iface.TxB)}</Text>
+                  </View>
+                </View>
+              </View>
+            ) : null}
+          </View>
+        );
+      })}
+    </ScrollView>
+  );
+}
+
 // ── Info tab ──────────────────────────────────────────────────
 
 function InfoTab({ display, userData, onLogout }: { display: string; userData: Record<string, string> | null; onLogout: () => void }) {
@@ -240,6 +390,7 @@ interface Props {
 
 const TABS = [
   { id: 'disks', label: '💿 Dyski' },
+  { id: 'net',   label: '🌐 Sieć'  },
   { id: 'files', label: '📁 Pliki' },
   { id: 'info',  label: '⚙️ Info'  },
 ] as const;
@@ -282,6 +433,7 @@ export default function HomeScreen({ serverUrl, userData, onLogout }: Props) {
 
       <View style={styles.content}>
         {tab === 'disks' && <DisksTab serverUrl={serverUrl} userData={userData} />}
+        {tab === 'net'   && <NetworkTab serverUrl={serverUrl} userData={userData} />}
         {tab === 'files' && (
           <ScrollView contentContainerStyle={styles.scrollContent}>
             <FilesTab />
@@ -321,7 +473,7 @@ const styles = StyleSheet.create({
   tabRow: { flexDirection: 'row', gap: 4, paddingHorizontal: 16, marginBottom: 10 },
   tab: { flex: 1, paddingVertical: 7, borderRadius: 8, borderWidth: 1, borderColor: C.border, alignItems: 'center' },
   tabActive: { backgroundColor: C.accent, borderColor: C.accent },
-  tabLabel: { fontSize: 12, fontFamily: FONTS.semibold, color: C.textMute },
+  tabLabel: { fontSize: 11, fontFamily: FONTS.semibold, color: C.textMute },
   tabLabelActive: { color: C.bg },
   divider: { height: 1, backgroundColor: C.surface, marginHorizontal: 16, marginBottom: 0 },
 
@@ -340,6 +492,35 @@ const styles = StyleSheet.create({
   diskStat: { fontSize: 11, color: C.textMute, fontFamily: FONTS.regular },
   ioRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: C.border },
   ioStat: { fontSize: 11, fontFamily: FONTS.mono, color: C.textSub },
+
+  hostnameRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 10, paddingHorizontal: 12, marginTop: 12, marginBottom: 4, borderRadius: 8, backgroundColor: C.surface, borderWidth: 1, borderColor: C.border },
+  hostnameLabel: { fontSize: 10, fontFamily: FONTS.bold, color: C.textMute, letterSpacing: 1.0, textTransform: 'uppercase' },
+  hostnameVal: { fontSize: 13, fontFamily: FONTS.mono, color: C.accent },
+
+  ifaceCard: { marginTop: 10, borderRadius: 12, backgroundColor: C.surface, borderWidth: 1, borderColor: C.border, overflow: 'hidden' },
+  ifaceCardDown: { opacity: 0.55 },
+  ifaceHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 12, paddingBottom: 8 },
+  ifaceNameRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  ifaceDot: { width: 8, height: 8, borderRadius: 4 },
+  ifaceName: { fontSize: 15, fontFamily: FONTS.bold, color: C.text },
+  speedBadge: { paddingVertical: 2, paddingHorizontal: 7, borderRadius: 6, backgroundColor: C.accentBg, borderWidth: 1, borderColor: 'rgba(0,194,233,0.25)' },
+  speedText: { fontSize: 10, fontFamily: FONTS.mono, color: C.accent },
+  stateBadge: { paddingVertical: 3, paddingHorizontal: 8, borderRadius: 20, backgroundColor: C.greenBg, borderWidth: 1, borderColor: 'rgba(49,170,64,0.3)' },
+  stateBadgeDown: { backgroundColor: C.surface, borderColor: C.border },
+  stateText: { fontSize: 10, fontFamily: FONTS.bold, letterSpacing: 0.7, color: C.green },
+  stateTextDown: { color: C.textMute },
+
+  ifaceMeta: { paddingHorizontal: 12, paddingBottom: 8 },
+  metaRow: { flexDirection: 'row', gap: 8, marginBottom: 3 },
+  metaKey: { fontSize: 11, fontFamily: FONTS.semibold, color: C.textMute, width: 36 },
+  metaVal: { fontSize: 11, fontFamily: FONTS.mono, color: C.textSub },
+
+  netIoRow: { flexDirection: 'row', borderTopWidth: 1, borderTopColor: C.border },
+  netIoItem: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, padding: 10 },
+  netIoDivider: { width: 1, backgroundColor: C.border, marginVertical: 8 },
+  netIoArrow: { fontSize: 18, color: C.green, fontFamily: FONTS.bold },
+  netIoLabel: { fontSize: 10, color: C.textMute, fontFamily: FONTS.regular, textTransform: 'uppercase', letterSpacing: 0.5 },
+  netIoVal: { fontSize: 13, color: C.text, fontFamily: FONTS.mono },
 
   breadcrumb: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 7, paddingHorizontal: 10, borderRadius: 8, marginBottom: 10, marginTop: 12, backgroundColor: C.surface, borderWidth: 1, borderColor: C.border },
   breadcrumbText: { fontSize: 11, fontFamily: FONTS.mono, color: 'rgba(0,137,171,1)' },
