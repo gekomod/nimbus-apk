@@ -11,14 +11,15 @@ import { C, FONTS } from '../tokens';
 
 interface Props {
   onBack: () => void;
-  onSuccess: (data: Record<string, string>) => void;
+  onSuccess: (data: Record<string, string>, password: string) => void;
   serverUrl: string;
   savedUsername?: string;
+  savedPassword?: string;
 }
 
-export default function LoginScreen({ onBack, onSuccess, serverUrl, savedUsername = '' }: Props) {
+export default function LoginScreen({ onBack, onSuccess, serverUrl, savedUsername = '', savedPassword = '' }: Props) {
   const [user, setUser]    = useState(savedUsername);
-  const [pass, setPass]    = useState('');
+  const [pass, setPass]    = useState(savedPassword);
   const [loading, setLoad] = useState(false);
   const [error, setError]  = useState('');
 
@@ -43,7 +44,7 @@ export default function LoginScreen({ onBack, onSuccess, serverUrl, savedUsernam
       try { data = JSON.parse(text); } catch { data = { raw: text }; }
 
       if (res.ok) {
-        onSuccess({ ...data, username: user });
+        onSuccess({ ...data, username: user }, pass);
       } else {
         setError(`HTTP ${res.status}: ${data.message || data.error || data.detail || data.raw || 'Błąd logowania'}`);
       }
