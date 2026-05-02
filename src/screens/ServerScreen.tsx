@@ -19,9 +19,9 @@ interface Props {
 }
 
 export default function ServerScreen({ onNext, onBack, serverUrl, setServerUrl }: Props) {
-  const [error, setError]   = useState('');
-  const [testing, setTest]  = useState(false);
-  const [tested, setTested] = useState(false);
+  const [error, setError]     = useState('');
+  const [testing, setTest]    = useState(false);
+  const [testResult, setResult] = useState<'ok' | 'fail' | null>(null);
 
   function validate() {
     if (!serverUrl.trim()) { setError('Podaj adres serwera'); return false; }
@@ -29,16 +29,26 @@ export default function ServerScreen({ onNext, onBack, serverUrl, setServerUrl }
     return true;
   }
 
-  function handleTest() {
+  async function handleTest() {
     if (!validate()) return;
-    setTest(true); setTested(false);
-    setTimeout(() => { setTest(false); setTested(true); }, 1400);
+    setTest(true); setResult(null);
+    try {
+      const base = serverUrl.startsWith('http') ? serverUrl : 'http://' + serverUrl;
+      const url = `${base.replace(/\/+$/, '')}/api/login`;
+      const res = await fetch(url, { method: 'GET' });
+      // Any HTTP response (even 405) means server is reachable
+      setResult(res.status < 500 ? 'ok' : 'fail');
+    } catch {
+      setResult('fail');
+    } finally {
+      setTest(false);
+    }
   }
 
   function handleTemplate(addr: string) {
     setServerUrl('http://' + addr);
     setError('');
-    setTested(false);
+    setResult(null);
   }
 
   return (
@@ -73,7 +83,7 @@ export default function ServerScreen({ onNext, onBack, serverUrl, setServerUrl }
         <Field
           label="Adres serwera"
           value={serverUrl}
-          onChange={v => { setServerUrl(v); setError(''); setTested(false); }}
+          onChange={v => { setServerUrl(v); setError(''); setResult(null); }}
           placeholder="http://192.168.1.100:5000"
           mono
           error={error}
@@ -93,7 +103,11 @@ export default function ServerScreen({ onNext, onBack, serverUrl, setServerUrl }
         <TouchableOpacity
           onPress={handleTest}
           disabled={testing}
-          style={[styles.testBtn, tested && styles.testBtnTested]}
+          style={[
+            styles.testBtn,
+            testResult === 'ok' && styles.testBtnOk,
+            testResult === 'fail' && styles.testBtnFail,
+          ]}
         >
           {testing ? (
             <View style={styles.row}>
@@ -101,8 +115,11 @@ export default function ServerScreen({ onNext, onBack, serverUrl, setServerUrl }
               <Text style={[styles.testLabel, { color: C.accentDim }]}>Testowanie…</Text>
             </View>
           ) : (
-            <Text style={[styles.testLabel, { color: tested ? C.green : C.accentDim }]}>
-              {tested ? '✓ Serwer osiągalny' : 'Testuj połączenie'}
+            <Text style={[
+              styles.testLabel,
+              { color: testResult === 'ok' ? C.green : testResult === 'fail' ? C.red : C.accentDim },
+            ]}>
+              {testResult === 'ok' ? '✓ Serwer osiągalny' : testResult === 'fail' ? '✗ Brak połączenia' : 'Testuj połączenie'}
             </Text>
           )}
         </TouchableOpacity>
@@ -222,8 +239,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  testBtnTested: {
+  testBtnOk: {
     borderColor: 'rgba(49,170,64,0.5)',
+  },
+  testBtnFail: {
+    borderColor: 'rgba(241,77,76,0.5)',
   },
   testLabel: {
     fontSize: 14,
