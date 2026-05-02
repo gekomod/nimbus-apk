@@ -587,7 +587,7 @@ const s = StyleSheet.create({
 
   // Drawer
   backdrop:     { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.55)' },
-  drawerPanel:  { position: 'absolute', left: 0, top: 0, bottom: 0, width: DRAWER_W, backgroundColor: 'oklch(0.11 0.015 240)' as any, borderRightWidth: 1, borderRightColor: C.borderHi },
+  drawerPanel:  { position: 'absolute', left: 0, top: 0, bottom: 0, width: DRAWER_W, backgroundColor: '#07101a', borderRightWidth: 1, borderRightColor: C.borderHi },
   drawerHeader: { flexDirection: 'row', alignItems: 'center', padding: 20, paddingTop: 24 },
   drawerAppName:{ fontSize: 18, fontFamily: FONTS.bold, color: C.text },
   drawerServer: { fontSize: 10, fontFamily: FONTS.mono, color: C.textMute },
