@@ -275,17 +275,22 @@ function DisksTab({ serverUrl, userData }: { serverUrl: string; userData: Record
   const fetch_ = useCallback(async (isRef = false) => {
     isRef ? setRef(true) : setLoad(true);
     setError('');
+    let anyOk = false;
     try {
-      const [resP, resM] = await Promise.all([
-        apiFetch(serverUrl, '/api/zfs/pools', userData),
-        apiFetch(serverUrl, '/api/storage/mounts', userData),
-      ]);
+      const resP = await apiFetch(serverUrl, '/api/zfs/pools', userData);
       const jp = await resP.json();
-      const jm = await resM.json().catch(() => []);
-      setPools(jp.pools ?? []);
-      setMounts(Array.isArray(jm) ? jm : []);
-    } catch { setError('Nie można pobrać danych dysków'); }
-    finally { setLoad(false); setRef(false); }
+      if (Array.isArray(jp.pools)) { setPools(jp.pools); anyOk = true; }
+    } catch { /* ZFS może nie być zainstalowane */ }
+    try {
+      const resM = await apiFetch(serverUrl, '/api/storage/mounts', userData);
+      if (resM.ok) {
+        const jm = await resM.json();
+        const arr = Array.isArray(jm) ? jm : (Array.isArray(jm?.mounts) ? jm.mounts : []);
+        setMounts(arr); anyOk = true;
+      }
+    } catch { /* punkty montowania niedostępne */ }
+    if (!anyOk) setError('Nie można pobrać danych dysków');
+    setLoad(false); setRef(false);
   }, [serverUrl, userData]);
 
   useEffect(() => { fetch_(); }, [fetch_]);
@@ -293,7 +298,7 @@ function DisksTab({ serverUrl, userData }: { serverUrl: string; userData: Record
   if (loading) return <LoadingView text="Ładowanie dysków…" />;
   if (error)   return <ErrorView msg={error} onRetry={fetch_} />;
 
-  const visibleMounts = mounts.filter(m => !m.mountpoint.startsWith('/snap/'));
+  const visibleMounts = mounts.filter(m => m.mountpoint && !m.mountpoint.startsWith('/snap/'));
 
   return (
     <ScrollView refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => fetch_(true)} tintColor={C.accent} />}>
@@ -302,7 +307,8 @@ function DisksTab({ serverUrl, userData }: { serverUrl: string; userData: Record
           <SLabel label="PULE ZFS" />
           {pools.map(pool => {
             const pct = pool.total > 0 ? Math.round((pool.used / pool.total) * 100) : 0;
-            const ok = pool.health === 'ONLINE' || pool.health === 'ok';
+            const h = (pool.health ?? '').toUpperCase();
+            const ok = h === 'ONLINE' || h === 'OK';
             return (
               <View key={pool.name} style={[s.card, !ok && s.cardWarn]}>
                 <View style={s.row}>
@@ -311,7 +317,7 @@ function DisksTab({ serverUrl, userData }: { serverUrl: string; userData: Record
                     <Text style={s.cardSub}>{pool.type} · {formatSize(pool.total)}</Text>
                   </View>
                   <View style={[s.badge, !ok && s.badgeWarn]}>
-                    <Text style={[s.badgeTxt, !ok && { color: C.yellow }]}>{ok ? 'ONLINE' : pool.health.toUpperCase()}</Text>
+                    <Text style={[s.badgeTxt, !ok && { color: C.yellow }]}>{ok ? 'ONLINE' : h}</Text>
                   </View>
                 </View>
                 <StatBar pct={pct} color={pct > 80 ? C.yellow : C.accent} />
@@ -320,9 +326,9 @@ function DisksTab({ serverUrl, userData }: { serverUrl: string; userData: Record
                   <Text style={s.sub}>Wolne: {formatSize(pool.avail)}</Text>
                 </View>
                 <View style={[s.row, s.ioBar]}>
-                  <Text style={s.ioTxt}>↓ {pool.read_mbps.toFixed(2)} MB/s</Text>
-                  <Text style={s.ioTxt}>↑ {pool.write_mbps.toFixed(2)} MB/s</Text>
-                  <Text style={s.ioTxt}>IOPS: {pool.iops}</Text>
+                  <Text style={s.ioTxt}>↓ {(pool.read_mbps ?? 0).toFixed(2)} MB/s</Text>
+                  <Text style={s.ioTxt}>↑ {(pool.write_mbps ?? 0).toFixed(2)} MB/s</Text>
+                  <Text style={s.ioTxt}>IOPS: {pool.iops ?? 0}</Text>
                 </View>
               </View>
             );
@@ -458,6 +464,18 @@ function ActionBtn({ label, color, onPress, disabled }: { label: string; color: 
 
 // ── Network Tab ───────────────────────────────────────────────────
 
+function normalizeIface(raw: any): NetIface {
+  return {
+    Name:  raw.Name  ?? raw.name  ?? raw.iface ?? '',
+    RxB:   raw.RxB   ?? raw.rxb   ?? raw.rx_bytes ?? raw.rx ?? 0,
+    TxB:   raw.TxB   ?? raw.txb   ?? raw.tx_bytes ?? raw.tx ?? 0,
+    State: raw.State ?? raw.state ?? raw.flags ?? 'unknown',
+    IP:    raw.IP    ?? raw.ip    ?? raw.addr ?? raw.ipv4 ?? '',
+    MAC:   raw.MAC   ?? raw.mac   ?? '',
+    Speed: raw.Speed ?? raw.speed ?? '',
+  };
+}
+
 function NetworkTab({ serverUrl, userData }: { serverUrl: string; userData: Record<string, string> | null }) {
   const [hostname, setHost]  = useState('');
   const [ifaces, setIfaces]  = useState<NetIface[]>([]);
@@ -470,10 +488,11 @@ function NetworkTab({ serverUrl, userData }: { serverUrl: string; userData: Reco
     setError('');
     try {
       const res = await apiFetch(serverUrl, '/api/network', userData);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       setHost(json.hostname ?? '');
-      setIfaces(json.interfaces ?? []);
-    } catch { setError('Nie można pobrać danych sieciowych'); }
+      setIfaces((json.interfaces ?? []).map(normalizeIface));
+    } catch (e: any) { setError(`Błąd sieci: ${e?.message ?? 'nieznany'}`); }
     finally { setLoad(false); setRef(false); }
   }, [serverUrl, userData]);
 
@@ -492,9 +511,10 @@ function NetworkTab({ serverUrl, userData }: { serverUrl: string; userData: Reco
       ) : null}
       <SLabel label="INTERFEJSY" />
       {ifaces.map(iface => {
-        const up = iface.State === 'up';
+        const stateStr = (iface.State ?? '').toLowerCase();
+        const up = stateStr === 'up' || stateStr === 'active' || stateStr === 'connected';
         return (
-          <View key={iface.Name} style={[s.card, !up && { opacity: 0.55 }]}>
+          <View key={iface.Name || String(Math.random())} style={[s.card, !up && { opacity: 0.55 }]}>
             <View style={s.row}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                 <View style={[s.dot, { backgroundColor: up ? C.green : C.textMute, marginRight: 0 }]} />
@@ -504,7 +524,7 @@ function NetworkTab({ serverUrl, userData }: { serverUrl: string; userData: Reco
                 ) : null}
               </View>
               <View style={[s.badge, !up && s.badgeDown]}>
-                <Text style={[s.badgeTxt, !up && { color: C.textMute }]}>{iface.State.toUpperCase()}</Text>
+                <Text style={[s.badgeTxt, !up && { color: C.textMute }]}>{(iface.State ?? 'unknown').toUpperCase()}</Text>
               </View>
             </View>
             {(iface.IP || iface.MAC) ? (
