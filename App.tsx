@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Animated, BackHandler, Dimensions, StyleSheet, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
+import Constants from 'expo-constants';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import {
   useFonts,
@@ -15,7 +16,9 @@ import ServerScreen  from './src/screens/ServerScreen';
 import LoginScreen   from './src/screens/LoginScreen';
 import SuccessScreen from './src/screens/SuccessScreen';
 import HomeScreen    from './src/screens/HomeScreen';
+import UpdateModal   from './src/components/UpdateModal';
 import { loadSettings, saveSettings, clearSettings } from './src/storage';
+import { checkForUpdate, UpdateInfo } from './src/checkUpdate';
 import { C } from './src/tokens';
 
 SplashScreen.preventAutoHideAsync();
@@ -30,6 +33,7 @@ function AppInner() {
   const [savedPassword, setSavedPass] = useState('');
   const [userData, setData]       = useState<UserData>(null);
   const [settingsLoaded, setLoaded] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const slideAnim = useRef(new Animated.Value(0)).current;
 
   const [fontsLoaded] = useFonts({
@@ -69,6 +73,12 @@ function AppInner() {
       }
       setLoaded(true);
     });
+  }, []);
+
+  // Check for app updates on startup
+  useEffect(() => {
+    const current = Constants.expoConfig?.version ?? '1.0.0';
+    checkForUpdate(current).then(info => { if (info) setUpdateInfo(info); });
   }, []);
 
   const onLayoutRootView = useCallback(async () => {
@@ -132,6 +142,16 @@ function AppInner() {
           {renderScreen()}
         </Animated.View>
       </SafeAreaView>
+
+      {updateInfo && (
+        <UpdateModal
+          visible
+          version={updateInfo.version}
+          notes={updateInfo.notes}
+          url={updateInfo.url}
+          onClose={() => setUpdateInfo(null)}
+        />
+      )}
     </View>
   );
 }
