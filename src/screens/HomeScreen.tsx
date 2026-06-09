@@ -1,1025 +1,815 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import {
-  View, Text, TouchableOpacity, ScrollView, StyleSheet,
-  RefreshControl, Animated, Dimensions, TouchableWithoutFeedback, Switch,
-} from 'react-native';
-import NasIcon from '../components/NasIcon';
-import GridBg from '../components/GridBg';
-import Spinner from '../components/Spinner';
+// HomeScreen — Main app shell with bottom nav + tabs
+import React, { useEffect, useRef, useState } from 'react';
+import { Animated, BackHandler, Easing, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { C, FONTS } from '../tokens';
+import { Bar, Card, Dot, ModuleHeader, NbIcon, Pill, Ring, Row, SectionTitle, Spark, Spinner, Toggle, useCount } from '../components/ui';
+import { ALERTS, CLAMAV, CONTAINERS, DISKS, FIREWALL, INTERFACES, LOGS, MEDIA, POOLS, PROCESSES, SERVER, SERVICES, SYSTEM, UPS, USERS_LIST, VPN } from '../mockData';
 
-const DRAWER_W = 260;
-
-// ── Types ─────────────────────────────────────────────────────────
-
-type TabId = 'dashboard' | 'disks' | 'docker' | 'net' | 'services' | 'logs' | 'info';
-
-interface Overview {
-  hostname: string; kernel: string; uptime_secs: number;
-  cpu: { cores: string; freq_ghz: string; load: number[]; model: string; percent: number; temp: number };
-  memory: { avail_gb: number; cached_gb: number; percent: number;
-            swap_total_gb: number; swap_used_gb: number; total_gb: number; used_gb: number };
-}
-interface Pool {
-  name: string; type: string; total: number; used: number;
-  avail: number; health: string; iops: number; read_mbps: number; write_mbps: number;
-}
-interface Mount {
-  device: string; mountpoint: string; fstype: string;
-  total: number; used: number; free: number; percent: number;
-}
-interface Container {
-  id: string; name: string; image: string; status: string; state: string;
-  cpu?: number; mem_mb?: number;
-}
-interface NetIface {
-  Name: string; RxB: number; TxB: number; State: string; IP: string; MAC: string; Speed: string;
-}
-interface LogEntry {
-  time: string; source: string; level: string; message: string;
+// ── Live data hook ────────────────────────────────────────────────────────────
+function useLive() {
+  const [s, setS] = useState(() => ({
+    cpu: SYSTEM.cpu, ram: SYSTEM.ram, temp: SYSTEM.temp,
+    down: SYSTEM.down, up: SYSTEM.up,
+    cpuHist: Array.from({ length: 30 }, () => 18 + Math.random() * 18),
+    netHist: Array.from({ length: 30 }, () => 20 + Math.random() * 40),
+  }));
+  useEffect(() => {
+    const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
+    const id = setInterval(() => {
+      setS(p => {
+        const cpu = clamp(p.cpu + (Math.random() - 0.5) * 14, 8, 78);
+        const ram = clamp(p.ram + (Math.random() - 0.5) * 4, 52, 72);
+        const temp = clamp(p.temp + (Math.random() - 0.5) * 2, 42, 54);
+        const down = clamp(p.down + (Math.random() - 0.5) * 30, 2, 118);
+        const up = clamp(p.up + (Math.random() - 0.5) * 8, 1, 40);
+        return { cpu, ram, temp, down, up, cpuHist: [...p.cpuHist.slice(1), cpu], netHist: [...p.netHist.slice(1), down] };
+      });
+    }, 1500);
+    return () => clearInterval(id);
+  }, []);
+  return s;
 }
 
-// ── Helpers ───────────────────────────────────────────────────────
-
-function formatBytes(b: number): string {
-  if (b >= 1e12) return `${(b / 1e12).toFixed(2)} TB`;
-  if (b >= 1e9)  return `${(b / 1e9).toFixed(1)} GB`;
-  if (b >= 1e6)  return `${(b / 1e6).toFixed(1)} MB`;
-  if (b >= 1e3)  return `${(b / 1e3).toFixed(0)} KB`;
-  return `${b} B`;
-}
-function formatSize(gb: number): string {
-  return gb >= 1000 ? `${(gb / 1000).toFixed(1)} TB` : `${gb.toFixed(0)} GB`;
-}
-function formatUptime(s: number): string {
-  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
-  if (d > 0) return `${d}d ${h}h ${m}m`;
-  if (h > 0) return `${h}h ${m}m`;
-  return `${m}m`;
-}
-function logColor(level: string): string {
-  if (level === 'error' || level === 'crit' || level === 'err') return C.red;
-  if (level === 'warn' || level === 'warning') return C.yellow;
-  return C.textMute;
-}
-
-// ── apiFetch ──────────────────────────────────────────────────────
-
-async function apiFetch(
-  serverUrl: string, path: string,
-  userData: Record<string, string> | null,
-  method = 'GET', body?: Record<string, any>,
-) {
-  const base = serverUrl.startsWith('http') ? serverUrl : 'http://' + serverUrl;
-  const headers: Record<string, string> = {};
-  if (userData?.token) headers['Authorization'] = `Bearer ${userData.token}`;
-  if (body) headers['Content-Type'] = 'application/json';
-  return fetch(`${base.replace(/\/+$/, '')}${path}`, {
-    method, headers, credentials: 'include',
-    body: body ? JSON.stringify(body) : undefined,
-  });
-}
-
-// ── Shared UI ─────────────────────────────────────────────────────
-
-function LoadingView({ text }: { text: string }) {
+// ── Dashboard ─────────────────────────────────────────────────────────────────
+function ServicesCard() {
+  const [svc, setSvc] = useState(SERVICES);
   return (
-    <View style={s.center}>
-      <Spinner size={28} color={C.accent} />
-      <Text style={s.loadTxt}>{text}</Text>
-    </View>
+    <Card pad={6}>
+      {svc.map((s, i) => (
+        <View key={s.name} style={{ borderTopWidth: i ? 1 : 0, borderTopColor: C.border, paddingHorizontal: 12 }}>
+          <Row icon="server" iconTone={s.on ? 'ok' : 'neutral'} title={s.name} sub={s.desc}
+            trailing={<Toggle on={s.on} onChange={(v: boolean) => setSvc(svc.map((x, j) => j === i ? { ...x, on: v } : x))} />} />
+        </View>
+      ))}
+    </Card>
   );
 }
-function ErrorView({ msg, onRetry }: { msg: string; onRetry: () => void }) {
+
+function Dashboard({ go }: any) {
+  const live = useLive();
+  const running = CONTAINERS.filter(c => c.status === 'running').length;
+  const cpuTemp = Math.round(live.temp);
   return (
-    <View style={s.center}>
-      <Text style={s.errTxt}>{msg}</Text>
-      <TouchableOpacity onPress={onRetry} style={s.retryBtn}>
-        <Text style={s.retryTxt}>Spróbuj ponownie</Text>
-      </TouchableOpacity>
-    </View>
-  );
-}
-function StatBar({ pct, color = C.accent }: { pct: number; color?: string }) {
-  return (
-    <View style={s.barTrack}>
-      <View style={[s.barFill, { width: `${Math.min(pct, 100)}%` as any, backgroundColor: color }]} />
-    </View>
-  );
-}
-function SLabel({ label }: { label: string }) {
-  return <Text style={s.sectionLabel}>{label}</Text>;
-}
-
-// ── Dashboard Tab ─────────────────────────────────────────────────
-
-interface DashData {
-  overview?: Overview;
-  pools?: { pools: Pool[] };
-  containers?: { containers: Container[] };
-  smb?: { active: boolean };
-  ssh?: { active: boolean };
-  nfs?: { active: boolean };
-  logs?: LogEntry[];
-}
-
-function DashboardTab({ serverUrl, userData }: { serverUrl: string; userData: Record<string, string> | null }) {
-  const [data, setData]      = useState<DashData>({});
-  const [loading, setLoad]   = useState(true);
-  const [error, setError]    = useState('');
-  const [refreshing, setRef] = useState(false);
-
-  const fetch_ = useCallback(async (isRef = false) => {
-    isRef ? setRef(true) : setLoad(true);
-    setError('');
-    try {
-      const res = await apiFetch(serverUrl, '/api/dashboard', userData);
-      if (!res.ok) throw new Error('dashboard');
-      setData(await res.json());
-    } catch {
-      try {
-        const res = await apiFetch(serverUrl, '/api/overview', userData);
-        setData({ overview: await res.json() });
-      } catch { setError('Nie można połączyć z serwerem'); }
-    } finally { setLoad(false); setRef(false); }
-  }, [serverUrl, userData]);
-
-  useEffect(() => { fetch_(); }, [fetch_]);
-
-  if (loading) return <LoadingView text="Ładowanie pulpitu…" />;
-  if (error && !data.overview) return <ErrorView msg={error} onRetry={fetch_} />;
-
-  const ov = data.overview;
-  const pools = data.pools?.pools ?? [];
-  const containers = data.containers?.containers ?? [];
-  const running = containers.filter(c => c.state === 'running').length;
-  const healthy = pools.filter(p => p.health === 'ONLINE' || p.health === 'ok').length;
-  const recentLogs = (data.logs ?? []).slice(0, 6);
-  const cpuColor = (ov?.cpu.percent ?? 0) > 80 ? C.red : C.accent;
-  const memColor = (ov?.memory.percent ?? 0) > 85 ? C.red : C.accent;
-
-  return (
-    <ScrollView refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => fetch_(true)} tintColor={C.accent} />}>
-      {ov && (
-        <>
-          <SLabel label="SYSTEM" />
-          <View style={s.card}>
-            <View style={[s.row, { marginBottom: 6 }]}>
-              <Text style={s.cardTitle}>{ov.hostname}</Text>
-              <View style={[s.dot, { backgroundColor: C.green, marginRight: 0 }]} />
-            </View>
-            <Text style={s.sub}>Uptime: {formatUptime(ov.uptime_secs)} · {ov.kernel}</Text>
-
-            <View style={[s.row, { marginTop: 10 }]}>
-              <Text style={s.metricLabel}>CPU</Text>
-              <Text style={[s.metricVal, { color: cpuColor }]}>{ov.cpu.percent.toFixed(1)}%</Text>
-            </View>
-            <StatBar pct={ov.cpu.percent} color={cpuColor} />
-
-            <View style={s.row}>
-              <Text style={s.metricLabel}>RAM  {ov.memory.used_gb?.toFixed(1)} / {ov.memory.total_gb.toFixed(1)} GB</Text>
-              <Text style={[s.metricVal, { color: memColor }]}>{ov.memory.percent.toFixed(0)}%</Text>
-            </View>
-            <StatBar pct={ov.memory.percent} color={memColor} />
-
-            <View style={[s.row, { marginTop: 6 }]}>
-              <Text style={s.sub}>Temp: {ov.cpu.temp.toFixed(1)}°C</Text>
-              <Text style={s.sub}>Load: {ov.cpu.load.map(l => l.toFixed(2)).join(' / ')}</Text>
+    <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 24 }}>
+      {/* greeting */}
+      <View style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 8, marginBottom: 10 }}>
+        <View style={{ flex: 1 }}>
+          <Text style={{ fontFamily: FONTS.medium, fontSize: 13.5, color: C.textDim }}>Dzień dobry</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 2, flexWrap: 'wrap' }}>
+            <Text style={{ fontFamily: FONTS.extrabold, fontSize: 22, color: C.text, letterSpacing: -0.4 }}>{SERVER.name}</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: C.okDim,
+              paddingHorizontal: 8, paddingVertical: 3, borderRadius: 99 }}>
+              <Dot tone="ok" pulse />
+              <Text style={{ fontFamily: FONTS.monobold, fontSize: 10.5, color: C.ok, letterSpacing: 0.5 }}>NA ŻYWO</Text>
             </View>
           </View>
-        </>
-      )}
-
-      {pools.length > 0 && (
-        <>
-          <SLabel label="DYSKI ZFS" />
-          <View style={s.summaryRow}>
-            <SummaryCard icon="💾" label="Pule" value={`${pools.length}`} ok />
-            <SummaryCard icon="✅" label="Zdrowe" value={`${healthy}/${pools.length}`} ok={healthy === pools.length} />
-            <SummaryCard icon="📊" label="Zajęte"
-              value={`${Math.round(pools.reduce((a, p) => a + (p.used / p.total), 0) / pools.length * 100)}%`}
-              ok />
-          </View>
-        </>
-      )}
-
-      {containers.length > 0 && (
-        <>
-          <SLabel label="DOCKER" />
-          <View style={s.summaryRow}>
-            <SummaryCard icon="🐳" label="Kontenery" value={`${containers.length}`} ok />
-            <SummaryCard icon="▶" label="Aktywne" value={`${running}`} ok={running > 0} />
-            <SummaryCard icon="⏹" label="Zatrzymane" value={`${containers.length - running}`} ok={containers.length - running === 0} />
-          </View>
-        </>
-      )}
-
-      <SLabel label="USŁUGI" />
-      <View style={s.card}>
-        <ServiceLine label="Samba (SMB)" active={data.smb?.active ?? false} />
-        <ServiceLine label="SSH" active={data.ssh?.active ?? false} />
-        <ServiceLine label="NFS" active={data.nfs?.active ?? false} last />
+        </View>
+        <TouchableOpacity onPress={() => go('settings')} activeOpacity={0.75}
+          style={{ width: 42, height: 42, borderRadius: 21, borderWidth: 1, borderColor: C.border,
+            backgroundColor: C.surface, alignItems: 'center', justifyContent: 'center' }}>
+          <NbIcon name="settings" size={20} />
+        </TouchableOpacity>
       </View>
 
-      {recentLogs.length > 0 && (
-        <>
-          <SLabel label="OSTATNIE LOGI" />
-          <View style={s.card}>
-            {recentLogs.map((l, i) => (
-              <View key={i} style={[s.logLine, i < recentLogs.length - 1 && { marginBottom: 7 }]}>
-                <View style={[s.logDot, { backgroundColor: logColor(l.level) }]} />
-                <Text style={s.logMsg} numberOfLines={2}>{l.message}</Text>
+      {/* health hero */}
+      <Card pad={18}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+          <Text style={styles.sLabel}>Stan systemu</Text>
+          <Pill tone="ok"><Text style={{ fontFamily: FONTS.monobold, fontSize: 11.5, color: C.ok }}>Wszystkie sprawne</Text></Pill>
+        </View>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around', gap: 6 }}>
+          <Ring value={live.cpu} size={88} color={C.accent} sub="CPU" />
+          <Ring value={live.ram} size={88} color={C.purple} sub="RAM" />
+          <View style={{ gap: 14, minWidth: 78 }}>
+            <View>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <NbIcon name="thermometer" size={14} color={C.textFaint} />
+                <Text style={{ fontFamily: FONTS.regular, fontSize: 12, color: C.textFaint }}>Temp. CPU</Text>
               </View>
-            ))}
+              <Text style={{ fontFamily: FONTS.monobold, fontSize: 21, color: cpuTemp > 50 ? C.warn : C.text }}>
+                {cpuTemp}°<Text style={{ fontSize: 13, color: C.textFaint }}>C</Text>
+              </Text>
+            </View>
+            <View>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <NbIcon name="clock" size={14} color={C.textFaint} />
+                <Text style={{ fontFamily: FONTS.regular, fontSize: 12, color: C.textFaint }}>Uptime</Text>
+              </View>
+              <Text style={{ fontFamily: FONTS.monobold, fontSize: 15, color: C.text, marginTop: 2 }}>{SERVER.uptime}</Text>
+            </View>
           </View>
-        </>
-      )}
-    </ScrollView>
-  );
-}
+        </View>
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 16,
+          paddingTop: 14, borderTopWidth: 1, borderTopColor: C.border }}>
+          <Text style={{ fontFamily: FONTS.regular, fontSize: 12.5, color: C.textDim }}>
+            RAM: <Text style={{ fontFamily: FONTS.monobold, color: C.text }}>{SYSTEM.ramUsed} / {SYSTEM.ramTotal} GB</Text>
+          </Text>
+          <Text style={{ fontFamily: FONTS.regular, fontSize: 12.5, color: C.textDim }}>
+            Load: <Text style={{ fontFamily: FONTS.monobold, color: C.text }}>{SYSTEM.load.join('  ')}</Text>
+          </Text>
+        </View>
+      </Card>
 
-function SummaryCard({ icon, label, value, ok }: { icon: string; label: string; value: string; ok: boolean }) {
-  return (
-    <View style={s.summaryCard}>
-      <Text style={{ fontSize: 20 }}>{icon}</Text>
-      <Text style={[s.summaryVal, { color: ok ? C.text : C.yellow }]}>{value}</Text>
-      <Text style={s.summaryLabel}>{label}</Text>
-    </View>
-  );
-}
-function ServiceLine({ label, active, last }: { label: string; active: boolean; last?: boolean }) {
-  return (
-    <View style={[s.row, { paddingVertical: 10 }, !last && { borderBottomWidth: 1, borderBottomColor: C.border }]}>
-      <Text style={s.sub}>{label}</Text>
-      <View style={[s.statusPill, {
-        backgroundColor: active ? 'rgba(49,170,64,0.12)' : 'rgba(60,74,84,0.2)',
-        borderColor: active ? 'rgba(49,170,64,0.35)' : C.border,
-      }]}>
-        <Text style={{ fontSize: 10, fontFamily: FONTS.bold, color: active ? C.green : C.textMute }}>
-          {active ? 'AKTYWNA' : 'WYŁĄCZONA'}
-        </Text>
+      {/* network I/O */}
+      <View style={{ height: 14 }} />
+      <Card pad={16}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+          <Text style={styles.sLabel}>Ruch sieciowy</Text>
+          <View style={{ flexDirection: 'row', gap: 16 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+              <NbIcon name="arrow_down" size={14} color={C.accent} />
+              <Text style={{ fontFamily: FONTS.mono, fontSize: 13, color: C.accent }}>{live.down.toFixed(1)} <Text style={{ color: C.textFaint }}>MB/s</Text></Text>
+            </View>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+              <NbIcon name="arrow_up" size={14} color={C.ok} />
+              <Text style={{ fontFamily: FONTS.mono, fontSize: 13, color: C.ok }}>{live.up.toFixed(1)} <Text style={{ color: C.textFaint }}>MB/s</Text></Text>
+            </View>
+          </View>
+        </View>
+        <View style={{ marginTop: 8 }}><Spark data={live.netHist} color={C.accent} h={46} /></View>
+      </Card>
+
+      {/* ZFS pools */}
+      <View style={{ height: 18 }} />
+      <SectionTitle action="Zobacz wszystkie" onAction={() => go('storage')}>Pule ZFS</SectionTitle>
+      <Card pad={6}>
+        {POOLS.map((p, i) => (
+          <TouchableOpacity key={p.name} onPress={() => go('storage')} activeOpacity={0.75}
+            style={{ padding: 12, borderTopWidth: i ? 1 : 0, borderTopColor: C.border }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 9 }}>
+              <NbIcon name="database" size={18} color={p.status === 'healthy' ? C.accent : C.warn} />
+              <Text style={{ fontFamily: FONTS.monobold, fontSize: 15, color: C.text }}>{p.name}</Text>
+              <Text style={{ fontFamily: FONTS.regular, fontSize: 12, color: C.textFaint }}>{p.raid}</Text>
+              <View style={{ flex: 1 }} />
+              <Pill tone={p.status === 'healthy' ? 'ok' : 'warn'}>
+                <Text style={{ fontFamily: FONTS.monobold, fontSize: 11.5, color: p.status === 'healthy' ? C.ok : C.warn }}>
+                  {p.status === 'healthy' ? 'Sprawny' : 'Ostrzeżenie'}
+                </Text>
+              </Pill>
+            </View>
+            <Bar value={p.usedPct} color={p.usedPct > 85 ? C.warn : C.accent} />
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 6 }}>
+              <Text style={{ fontFamily: FONTS.mono, fontSize: 12, color: C.textDim }}>{p.used} TB użyte</Text>
+              <Text style={{ fontFamily: FONTS.mono, fontSize: 12, color: C.textDim }}>{(p.total - p.used).toFixed(1)} TB wolne</Text>
+            </View>
+          </TouchableOpacity>
+        ))}
+      </Card>
+
+      {/* containers + security */}
+      <View style={{ height: 18 }} />
+      <View style={{ flexDirection: 'row', gap: 12 }}>
+        <Card pad={16} onPress={() => go('docker')} style={{ flex: 1, gap: 4 }}>
+          <NbIcon name="box" size={22} color={C.accent} />
+          <Text style={{ fontFamily: FONTS.extrabold, fontSize: 30, color: C.text, marginTop: 6 }}>
+            {running}<Text style={{ fontSize: 16, color: C.textFaint, fontFamily: FONTS.regular }}>/{CONTAINERS.length}</Text>
+          </Text>
+          <Text style={{ fontFamily: FONTS.regular, fontSize: 13, color: C.textDim }}>Kontenery · uruchomione</Text>
+        </Card>
+        <Card pad={16} onPress={() => go('antivirus')} style={{ flex: 1, gap: 4 }}>
+          <NbIcon name="shield_check" size={22} color={C.ok} />
+          <Text style={{ fontFamily: FONTS.extrabold, fontSize: 30, color: C.text, marginTop: 6 }}>0</Text>
+          <Text style={{ fontFamily: FONTS.regular, fontSize: 13, color: C.textDim }}>Zagrożenia · Chroniony</Text>
+        </Card>
       </View>
-    </View>
-  );
-}
 
-// ── Disks Tab ─────────────────────────────────────────────────────
+      {/* services */}
+      <View style={{ height: 18 }} />
+      <SectionTitle>Usługi</SectionTitle>
+      <ServicesCard />
 
-function DisksTab({ serverUrl, userData }: { serverUrl: string; userData: Record<string, string> | null }) {
-  const [pools, setPools]    = useState<Pool[]>([]);
-  const [mounts, setMounts]  = useState<Mount[]>([]);
-  const [loading, setLoad]   = useState(true);
-  const [error, setError]    = useState('');
-  const [refreshing, setRef] = useState(false);
-
-  const fetch_ = useCallback(async (isRef = false) => {
-    isRef ? setRef(true) : setLoad(true);
-    setError('');
-    let anyOk = false;
-    try {
-      const resP = await apiFetch(serverUrl, '/api/zfs/pools', userData);
-      const jp = await resP.json();
-      if (Array.isArray(jp.pools)) { setPools(jp.pools); anyOk = true; }
-    } catch { /* ZFS może nie być zainstalowane */ }
-    try {
-      const resM = await apiFetch(serverUrl, '/api/storage/mounts', userData);
-      if (resM.ok) {
-        const jm = await resM.json();
-        const arr = Array.isArray(jm) ? jm : (Array.isArray(jm?.mounts) ? jm.mounts : []);
-        setMounts(arr); anyOk = true;
-      }
-    } catch { /* punkty montowania niedostępne */ }
-    if (!anyOk) setError('Nie można pobrać danych dysków');
-    setLoad(false); setRef(false);
-  }, [serverUrl, userData]);
-
-  useEffect(() => { fetch_(); }, [fetch_]);
-
-  if (loading) return <LoadingView text="Ładowanie dysków…" />;
-  if (error)   return <ErrorView msg={error} onRetry={fetch_} />;
-
-  const visibleMounts = mounts.filter(m => m.mountpoint && !m.mountpoint.startsWith('/snap/'));
-
-  return (
-    <ScrollView refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => fetch_(true)} tintColor={C.accent} />}>
-      {pools.length > 0 && (
-        <>
-          <SLabel label="PULE ZFS" />
-          {pools.map(pool => {
-            const pct = pool.total > 0 ? Math.round((pool.used / pool.total) * 100) : 0;
-            const h = (pool.health ?? '').toUpperCase();
-            const ok = h === 'ONLINE' || h === 'OK';
-            return (
-              <View key={pool.name} style={[s.card, !ok && s.cardWarn]}>
-                <View style={s.row}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={s.cardTitle}>{pool.name}</Text>
-                    <Text style={s.cardSub}>{pool.type} · {formatSize(pool.total)}</Text>
-                  </View>
-                  <View style={[s.badge, !ok && s.badgeWarn]}>
-                    <Text style={[s.badgeTxt, !ok && { color: C.yellow }]}>{ok ? 'ONLINE' : h}</Text>
-                  </View>
-                </View>
-                <StatBar pct={pct} color={pct > 80 ? C.yellow : C.accent} />
-                <View style={s.row}>
-                  <Text style={s.sub}>Zajęte: {formatSize(pool.used)} ({pct}%)</Text>
-                  <Text style={s.sub}>Wolne: {formatSize(pool.avail)}</Text>
-                </View>
-                <View style={[s.row, s.ioBar]}>
-                  <Text style={s.ioTxt}>↓ {(pool.read_mbps ?? 0).toFixed(2)} MB/s</Text>
-                  <Text style={s.ioTxt}>↑ {(pool.write_mbps ?? 0).toFixed(2)} MB/s</Text>
-                  <Text style={s.ioTxt}>IOPS: {pool.iops ?? 0}</Text>
-                </View>
-              </View>
-            );
-          })}
-        </>
-      )}
-
-      {visibleMounts.length > 0 && (
-        <>
-          <SLabel label="PUNKTY MONTOWANIA" />
-          {visibleMounts.map((m, i) => {
-            const pct = m.percent ?? 0;
-            return (
-              <View key={i} style={s.card}>
-                <View style={s.row}>
-                  <Text style={[s.cardTitle, { flex: 1 }]} numberOfLines={1}>{m.mountpoint}</Text>
-                  <Text style={[s.sub, { color: pct > 90 ? C.red : C.textMute }]}>{pct.toFixed(0)}%</Text>
-                </View>
-                <Text style={s.cardSub}>{m.fstype} · {m.device}</Text>
-                <StatBar pct={pct} color={pct > 90 ? C.red : pct > 75 ? C.yellow : C.accent} />
-                <View style={s.row}>
-                  <Text style={s.sub}>Zajęte: {formatBytes(m.used)}</Text>
-                  <Text style={s.sub}>Wolne: {formatBytes(m.free)}</Text>
-                </View>
-              </View>
-            );
-          })}
-        </>
-      )}
-
-      {pools.length === 0 && visibleMounts.length === 0 && (
-        <Text style={[s.loadTxt, { marginTop: 32, textAlign: 'center' }]}>Brak danych o dyskach</Text>
-      )}
-    </ScrollView>
-  );
-}
-
-// ── Docker Tab ────────────────────────────────────────────────────
-
-function DockerTab({ serverUrl, userData }: { serverUrl: string; userData: Record<string, string> | null }) {
-  const [containers, setContainers] = useState<Container[]>([]);
-  const [loading, setLoad]   = useState(true);
-  const [error, setError]    = useState('');
-  const [refreshing, setRef] = useState(false);
-  const [actionId, setActionId] = useState<string | null>(null);
-
-  const fetch_ = useCallback(async (isRef = false) => {
-    isRef ? setRef(true) : setLoad(true);
-    setError('');
-    try {
-      const res = await apiFetch(serverUrl, '/services/docker/containers', userData);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = await res.json();
-      setContainers(json.containers ?? []);
-    } catch (e: any) { setError(`Docker niedostępny: ${e.message}`); }
-    finally { setLoad(false); setRef(false); }
-  }, [serverUrl, userData]);
-
-  useEffect(() => { fetch_(); }, [fetch_]);
-
-  async function doAction(id: string, action: 'start' | 'stop' | 'restart') {
-    setActionId(id);
-    try {
-      await apiFetch(serverUrl, `/services/docker/containers/${id}/action`, userData, 'POST', { action });
-      await fetch_();
-    } finally { setActionId(null); }
-  }
-
-  if (loading) return <LoadingView text="Ładowanie kontenerów…" />;
-  if (error)   return <ErrorView msg={error} onRetry={fetch_} />;
-
-  const running = containers.filter(c => c.state === 'running');
-  const stopped = containers.filter(c => c.state !== 'running');
-
-  return (
-    <ScrollView refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => fetch_(true)} tintColor={C.accent} />}>
-      {containers.length > 0 && (
-        <View style={[s.row, { marginTop: 12, marginBottom: 4 }]}>
-          <Text style={[s.sub, { color: C.green }]}>▶  {running.length} aktywnych</Text>
-          <Text style={s.sub}>⏹  {stopped.length} zatrzymanych</Text>
-        </View>
-      )}
-
-      {[...running, ...stopped].map(c => {
-        const isRunning = c.state === 'running';
-        const busy = actionId === c.id;
-        return (
-          <View key={c.id} style={[s.card, !isRunning && { opacity: 0.7 }]}>
-            <View style={s.row}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, gap: 8 }}>
-                <View style={[s.dot, { backgroundColor: isRunning ? C.green : C.textMute, marginRight: 0 }]} />
-                <Text style={[s.cardTitle, { flex: 1 }]} numberOfLines={1}>{c.name.replace(/^\//, '')}</Text>
-              </View>
-              {busy && <Spinner size={14} color={C.accent} />}
+      {/* alerts */}
+      <View style={{ height: 18 }} />
+      <SectionTitle action="Zobacz wszystkie" onAction={() => go('notifications')}>Powiadomienia</SectionTitle>
+      <Card pad={6}>
+        {ALERTS.map((a, i) => (
+          <View key={i} style={{ flexDirection: 'row', gap: 12, padding: 12, borderTopWidth: i ? 1 : 0, borderTopColor: C.border }}>
+            <View style={{ marginTop: 2 }}>
+              <NbIcon name={a.lvl === 'warn' ? 'alert' : a.lvl === 'ok' ? 'check' : 'bell'} size={18}
+                color={a.lvl === 'warn' ? C.warn : a.lvl === 'ok' ? C.ok : C.accent} />
             </View>
-            <Text style={s.cardSub} numberOfLines={1}>{c.image}</Text>
-            <Text style={[s.sub, { marginTop: 4 }]}>{c.status}</Text>
-            {(c.cpu !== undefined || c.mem_mb !== undefined) && (
-              <View style={[s.row, { marginTop: 6 }]}>
-                {c.cpu !== undefined && <Text style={s.sub}>CPU: {c.cpu.toFixed(1)}%</Text>}
-                {c.mem_mb !== undefined && <Text style={s.sub}>RAM: {c.mem_mb.toFixed(0)} MB</Text>}
+            <View style={{ flex: 1 }}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 8 }}>
+                <Text style={{ fontFamily: FONTS.semibold, fontSize: 14.5, color: C.text, flex: 1 }}>{a.title}</Text>
+                <Text style={{ fontFamily: FONTS.regular, fontSize: 11.5, color: C.textFaint }}>{a.time}</Text>
               </View>
-            )}
-            <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 8, marginTop: 10 }}>
-              {isRunning ? (
-                <>
-                  <ActionBtn label="Restart" color={C.accent} onPress={() => doAction(c.id, 'restart')} disabled={busy} />
-                  <ActionBtn label="Stop"    color={C.red}    onPress={() => doAction(c.id, 'stop')}    disabled={busy} />
-                </>
-              ) : (
-                <ActionBtn label="Start" color={C.green} onPress={() => doAction(c.id, 'start')} disabled={busy} />
-              )}
+              <Text style={{ fontFamily: FONTS.regular, fontSize: 13, color: C.textDim, marginTop: 2 }}>{a.text}</Text>
             </View>
           </View>
-        );
-      })}
-
-      {containers.length === 0 && (
-        <Text style={[s.loadTxt, { marginTop: 32, textAlign: 'center' }]}>Brak kontenerów Docker</Text>
-      )}
+        ))}
+      </Card>
     </ScrollView>
   );
 }
 
-function ActionBtn({ label, color, onPress, disabled }: { label: string; color: string; onPress: () => void; disabled?: boolean }) {
+// ── Storage ───────────────────────────────────────────────────────────────────
+function StorageScreen({ go }: any) {
   return (
-    <TouchableOpacity onPress={onPress} disabled={disabled}
-      style={[s.actionBtn, { borderColor: color + '66', opacity: disabled ? 0.45 : 1 }]}>
-      <Text style={[s.actionBtnTxt, { color }]}>{label}</Text>
-    </TouchableOpacity>
-  );
-}
-
-// ── Network Tab ───────────────────────────────────────────────────
-
-function normalizeIface(raw: any): NetIface {
-  return {
-    Name:  raw.Name  ?? raw.name  ?? raw.iface ?? '',
-    RxB:   raw.RxB   ?? raw.rxb   ?? raw.rx_bytes ?? raw.rx ?? 0,
-    TxB:   raw.TxB   ?? raw.txb   ?? raw.tx_bytes ?? raw.tx ?? 0,
-    State: raw.State ?? raw.state ?? raw.flags ?? 'unknown',
-    IP:    raw.IP    ?? raw.ip    ?? raw.addr ?? raw.ipv4 ?? '',
-    MAC:   raw.MAC   ?? raw.mac   ?? '',
-    Speed: raw.Speed ?? raw.speed ?? '',
-  };
-}
-
-function NetworkTab({ serverUrl, userData }: { serverUrl: string; userData: Record<string, string> | null }) {
-  const [hostname, setHost]  = useState('');
-  const [ifaces, setIfaces]  = useState<NetIface[]>([]);
-  const [loading, setLoad]   = useState(true);
-  const [error, setError]    = useState('');
-  const [refreshing, setRef] = useState(false);
-
-  const fetch_ = useCallback(async (isRef = false) => {
-    isRef ? setRef(true) : setLoad(true);
-    setError('');
-    try {
-      const res = await apiFetch(serverUrl, '/api/network', userData);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = await res.json();
-      setHost(json.hostname ?? '');
-      setIfaces((json.interfaces ?? []).map(normalizeIface));
-    } catch (e: any) { setError(`Błąd sieci: ${e?.message ?? 'nieznany'}`); }
-    finally { setLoad(false); setRef(false); }
-  }, [serverUrl, userData]);
-
-  useEffect(() => { fetch_(); }, [fetch_]);
-
-  if (loading) return <LoadingView text="Ładowanie sieci…" />;
-  if (error)   return <ErrorView msg={error} onRetry={fetch_} />;
-
-  return (
-    <ScrollView refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => fetch_(true)} tintColor={C.accent} />}>
-      {hostname ? (
-        <View style={[s.row, s.hostRow]}>
-          <Text style={s.hostLabel}>HOSTNAME</Text>
-          <Text style={s.hostVal}>{hostname}</Text>
-        </View>
-      ) : null}
-      <SLabel label="INTERFEJSY" />
-      {ifaces.map(iface => {
-        const stateStr = (iface.State ?? '').toLowerCase();
-        const up = stateStr === 'up' || stateStr === 'active' || stateStr === 'connected';
-        return (
-          <View key={iface.Name || String(Math.random())} style={[s.card, !up && { opacity: 0.55 }]}>
-            <View style={s.row}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                <View style={[s.dot, { backgroundColor: up ? C.green : C.textMute, marginRight: 0 }]} />
-                <Text style={s.cardTitle}>{iface.Name}</Text>
-                {iface.Speed ? (
-                  <View style={s.speedBadge}><Text style={s.speedTxt}>{iface.Speed}</Text></View>
-                ) : null}
-              </View>
-              <View style={[s.badge, !up && s.badgeDown]}>
-                <Text style={[s.badgeTxt, !up && { color: C.textMute }]}>{(iface.State ?? 'unknown').toUpperCase()}</Text>
-              </View>
-            </View>
-            {(iface.IP || iface.MAC) ? (
-              <View style={{ marginTop: 6 }}>
-                {iface.IP ? <Text style={s.netMeta}>IP   {iface.IP}</Text> : null}
-                {iface.MAC && iface.MAC !== '00:00:00:00:00:00' ? <Text style={s.netMeta}>MAC  {iface.MAC}</Text> : null}
-              </View>
-            ) : null}
-            {up && (iface.RxB > 0 || iface.TxB > 0) ? (
-              <View style={[s.row, s.ioBar]}>
-                <Text style={[s.ioTxt, { color: C.green }]}>↓ {formatBytes(iface.RxB)}</Text>
-                <Text style={[s.ioTxt, { color: C.accent }]}>↑ {formatBytes(iface.TxB)}</Text>
-              </View>
-            ) : null}
-          </View>
-        );
-      })}
-    </ScrollView>
-  );
-}
-
-// ── Services Tab ──────────────────────────────────────────────────
-
-interface SvcData {
-  id: string; label: string; icon: string;
-  statusPath: string; togglePath: string | null;
-  active: boolean; installed: boolean; details: string; toggling: boolean;
-}
-
-const SVC_DEFS = [
-  { id: 'smb', label: 'Samba (SMB)', icon: '🗂️', statusPath: '/services/samba/status',        togglePath: '/services/samba/toggle' },
-  { id: 'ssh', label: 'SSH',         icon: '🔐', statusPath: '/services/ssh/status',           togglePath: '/services/ssh/toggle' },
-  { id: 'nfs', label: 'NFS',         icon: '📂', statusPath: '/api/nfs-server/status',         togglePath: null },
-  { id: 'ftp', label: 'FTP/SFTP',    icon: '📡', statusPath: '/api/services/ftp-sftp/status',  togglePath: '/api/services/ftp-sftp/toggle' },
-];
-
-function ServicesTab({ serverUrl, userData }: { serverUrl: string; userData: Record<string, string> | null }) {
-  const [services, setServices] = useState<SvcData[]>(
-    SVC_DEFS.map(d => ({ ...d, active: false, installed: false, details: '', toggling: false }))
-  );
-  const [loading, setLoad]   = useState(true);
-  const [refreshing, setRef] = useState(false);
-
-  const fetchAll = useCallback(async (isRef = false) => {
-    isRef ? setRef(true) : setLoad(true);
-    try {
-      const results = await Promise.all(SVC_DEFS.map(async def => {
-        try {
-          const res = await apiFetch(serverUrl, def.statusPath, userData);
-          const json = await res.json();
-          let details = '';
-          if (def.id === 'smb' && json.workgroup)        details = `Workgroup: ${json.workgroup}`;
-          if (def.id === 'ssh' && json.port)             details = `Port: ${json.port}`;
-          if (def.id === 'nfs' && json.export_count != null) details = `Eksporty: ${json.export_count}`;
-          if (def.id === 'ftp' && json.service)          details = json.service;
-          return { ...def, active: json.active ?? false, installed: json.installed ?? true, details, toggling: false };
-        } catch {
-          return { ...def, active: false, installed: false, details: 'Niedostępna', toggling: false };
-        }
-      }));
-      setServices(results);
-    } finally { setLoad(false); setRef(false); }
-  }, [serverUrl, userData]);
-
-  useEffect(() => { fetchAll(); }, [fetchAll]);
-
-  async function toggle(svc: SvcData) {
-    if (!svc.togglePath) return;
-    setServices(prev => prev.map(s => s.id === svc.id ? { ...s, toggling: true } : s));
-    try {
-      await apiFetch(serverUrl, svc.togglePath, userData, 'POST', { enable: !svc.active });
-      await fetchAll();
-    } finally {
-      setServices(prev => prev.map(s => s.id === svc.id ? { ...s, toggling: false } : s));
-    }
-  }
-
-  if (loading) return <LoadingView text="Ładowanie usług…" />;
-
-  return (
-    <ScrollView refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => fetchAll(true)} tintColor={C.accent} />}>
-      <SLabel label="USŁUGI SIECIOWE" />
-      {services.map(svc => (
-        <View key={svc.id} style={s.card}>
-          <View style={s.row}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-              <Text style={{ fontSize: 24 }}>{svc.icon}</Text>
-              <View>
-                <Text style={s.cardTitle}>{svc.label}</Text>
-                {svc.details ? <Text style={s.cardSub}>{svc.details}</Text> : null}
-                {!svc.installed && <Text style={[s.sub, { color: C.yellow }]}>Niezainstalowana</Text>}
-              </View>
-            </View>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-              {svc.toggling ? (
-                <Spinner size={18} color={C.accent} />
-              ) : (
-                <>
-                  <View style={[s.statusPill, {
-                    backgroundColor: svc.active ? 'rgba(49,170,64,0.12)' : 'rgba(60,74,84,0.2)',
-                    borderColor: svc.active ? 'rgba(49,170,64,0.35)' : C.border,
-                  }]}>
-                    <Text style={{ fontSize: 10, fontFamily: FONTS.bold, color: svc.active ? C.green : C.textMute }}>
-                      {svc.active ? 'ON' : 'OFF'}
+    <ScrollView contentContainerStyle={{ paddingBottom: 24 }}>
+      <ModuleHeader title="Magazyn" />
+      <View style={{ paddingHorizontal: 16 }}>
+        <SectionTitle>Pule ZFS</SectionTitle>
+        {POOLS.map(p => (
+          <View key={p.name} style={{ marginBottom: 12 }}>
+            <Card pad={16}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+                <Ring value={p.usedPct} size={72} sw={8} color={p.usedPct > 85 ? C.warn : C.accent} sub="użyte" />
+                <View style={{ flex: 1 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    <Text style={{ fontFamily: FONTS.monobold, fontSize: 18, color: C.text }}>{p.name}</Text>
+                    <Pill tone={p.status === 'healthy' ? 'ok' : 'warn'}>
+                      <Text style={{ fontFamily: FONTS.monobold, fontSize: 11, color: p.status === 'healthy' ? C.ok : C.warn }}>
+                        {p.status === 'healthy' ? 'Sprawny' : 'Ostrzeżenie'}
+                      </Text>
+                    </Pill>
+                  </View>
+                  <Text style={{ fontFamily: FONTS.regular, fontSize: 12.5, color: C.textDim, marginTop: 4 }}>{p.raid}</Text>
+                  <Text style={{ fontFamily: FONTS.mono, fontSize: 13, color: C.text, marginTop: 8 }}>{p.used} / {p.total} TB</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 6 }}>
+                    <NbIcon name={p.smart === 'passed' ? 'shield_check' : 'alert'} size={14}
+                      color={p.smart === 'passed' ? C.ok : C.warn} />
+                    <Text style={{ fontFamily: FONTS.regular, fontSize: 12, color: C.textFaint }}>S.M.A.R.T.:</Text>
+                    <Text style={{ fontFamily: FONTS.monobold, fontSize: 12, color: p.smart === 'passed' ? C.ok : C.warn }}>
+                      {p.smart === 'passed' ? 'PASSED' : 'WARN'}
                     </Text>
                   </View>
-                  {svc.togglePath && svc.installed && (
-                    <Switch
-                      value={svc.active}
-                      onValueChange={() => toggle(svc)}
-                      trackColor={{ false: C.border, true: 'rgba(49,170,64,0.5)' }}
-                      thumbColor={svc.active ? C.green : C.textMute}
-                    />
+                </View>
+              </View>
+            </Card>
+          </View>
+        ))}
+
+        <View style={{ height: 8 }} />
+        <SectionTitle>Dyski fizyczne</SectionTitle>
+        <Card pad={6}>
+          {DISKS.map((d, i) => (
+            <View key={d.dev} style={{ padding: 14, borderTopWidth: i ? 1 : 0, borderTopColor: C.border }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                <Text style={{ fontFamily: FONTS.monobold, fontSize: 14, color: C.text }}>{d.dev}</Text>
+                <Pill tone={d.smart === 'passed' ? 'ok' : 'warn'}>
+                  <Text style={{ fontFamily: FONTS.monobold, fontSize: 11, color: d.smart === 'passed' ? C.ok : C.warn }}>
+                    {d.smart === 'passed' ? 'PASSED' : 'WARN'}
+                  </Text>
+                </Pill>
+              </View>
+              <Text style={{ fontFamily: FONTS.regular, fontSize: 13, color: C.textDim, marginTop: 3 }}>{d.model}</Text>
+              <View style={{ flexDirection: 'row', gap: 16, marginTop: 6 }}>
+                <Text style={{ fontFamily: FONTS.mono, fontSize: 12, color: C.textFaint }}>🌡 {d.temp}°C</Text>
+                <Text style={{ fontFamily: FONTS.mono, fontSize: 12, color: C.textFaint }}>⏱ {d.hours}</Text>
+              </View>
+            </View>
+          ))}
+        </Card>
+      </View>
+    </ScrollView>
+  );
+}
+
+// ── Docker ────────────────────────────────────────────────────────────────────
+function DockerScreen({ go }: any) {
+  const [containers, setContainers] = useState(CONTAINERS);
+  const toggle = (name: string) => setContainers((cs: typeof CONTAINERS) =>
+    cs.map(c => c.name === name ? { ...c, status: c.status === 'running' ? 'stopped' : 'running' } : c));
+  return (
+    <ScrollView contentContainerStyle={{ paddingBottom: 24 }}>
+      <ModuleHeader title="Docker" />
+      <View style={{ paddingHorizontal: 16 }}>
+        <View style={{ flexDirection: 'row', gap: 12, marginBottom: 18 }}>
+          <Card pad={14} style={{ flex: 1, alignItems: 'center' }}>
+            <Text style={{ fontFamily: FONTS.extrabold, fontSize: 28, color: C.accent }}>
+              {containers.filter(c => c.status === 'running').length}
+            </Text>
+            <Text style={{ fontFamily: FONTS.regular, fontSize: 12, color: C.textDim }}>Uruchomione</Text>
+          </Card>
+          <Card pad={14} style={{ flex: 1, alignItems: 'center' }}>
+            <Text style={{ fontFamily: FONTS.extrabold, fontSize: 28, color: C.textFaint }}>
+              {containers.filter(c => c.status === 'stopped').length}
+            </Text>
+            <Text style={{ fontFamily: FONTS.regular, fontSize: 12, color: C.textDim }}>Zatrzymane</Text>
+          </Card>
+        </View>
+        <Card pad={6}>
+          {containers.map((c, i) => (
+            <View key={c.name} style={{ padding: 14, borderTopWidth: i ? 1 : 0, borderTopColor: C.border }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                <View style={{ flex: 1 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    <Dot tone={c.status === 'running' ? 'ok' : 'off'} />
+                    <Text style={{ fontFamily: FONTS.semibold, fontSize: 15, color: C.text }}>{c.name}</Text>
+                  </View>
+                  <Text style={{ fontFamily: FONTS.mono, fontSize: 11.5, color: C.textFaint, marginTop: 3 }}>{c.image}</Text>
+                  {c.status === 'running' && (
+                    <Text style={{ fontFamily: FONTS.mono, fontSize: 11.5, color: C.textDim, marginTop: 3 }}>
+                      CPU {c.cpu}% · RAM {c.ram} MB · :{c.port}
+                    </Text>
                   )}
-                </>
-              )}
+                </View>
+                <TouchableOpacity onPress={() => toggle(c.name)} activeOpacity={0.75}
+                  style={{ paddingHorizontal: 14, paddingVertical: 7, borderRadius: 8,
+                    backgroundColor: c.status === 'running' ? C.dangerDim : C.okDim }}>
+                  <Text style={{ fontFamily: FONTS.semibold, fontSize: 13,
+                    color: c.status === 'running' ? C.danger : C.ok }}>
+                    {c.status === 'running' ? 'Stop' : 'Start'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          ))}
+        </Card>
+      </View>
+    </ScrollView>
+  );
+}
+
+// ── Network ───────────────────────────────────────────────────────────────────
+function NetworkScreen({ go }: any) {
+  return (
+    <ScrollView contentContainerStyle={{ paddingBottom: 24 }}>
+      <ModuleHeader title="Sieć" />
+      <View style={{ paddingHorizontal: 16 }}>
+        <SectionTitle>Interfejsy</SectionTitle>
+        <Card pad={6}>
+          {INTERFACES.map((iface, i) => (
+            <View key={iface.name} style={{ padding: 14, borderTopWidth: i ? 1 : 0, borderTopColor: C.border }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                  <Dot tone={iface.up ? 'ok' : 'off'} />
+                  <View>
+                    <Text style={{ fontFamily: FONTS.monobold, fontSize: 15, color: C.text }}>{iface.name}</Text>
+                    <Text style={{ fontFamily: FONTS.mono, fontSize: 12, color: C.textDim }}>{iface.ip}</Text>
+                  </View>
+                </View>
+                <Text style={{ fontFamily: FONTS.mono, fontSize: 12, color: C.textFaint }}>{iface.speed}</Text>
+              </View>
+            </View>
+          ))}
+        </Card>
+
+        <View style={{ height: 18 }} />
+        <View style={{ flexDirection: 'row', gap: 12 }}>
+          <Card pad={14} style={{ flex: 1 }}>
+            <NbIcon name="shield" size={20} color={FIREWALL.enabled ? C.ok : C.textFaint} />
+            <Text style={{ fontFamily: FONTS.bold, fontSize: 15, color: C.text, marginTop: 8 }}>Zapora</Text>
+            <Text style={{ fontFamily: FONTS.mono, fontSize: 12, color: C.textDim }}>{FIREWALL.rules} reguł · {FIREWALL.enabled ? 'włączona' : 'wyłączona'}</Text>
+          </Card>
+          <Card pad={14} style={{ flex: 1 }}>
+            <NbIcon name="lock" size={20} color={C.accent} />
+            <Text style={{ fontFamily: FONTS.bold, fontSize: 15, color: C.text, marginTop: 8 }}>WireGuard</Text>
+            <Text style={{ fontFamily: FONTS.mono, fontSize: 12, color: C.textDim }}>{VPN.peers} klientów · {VPN.online} online</Text>
+          </Card>
+        </View>
+      </View>
+    </ScrollView>
+  );
+}
+
+// ── Media ─────────────────────────────────────────────────────────────────────
+function MediaScreen({ go }: any) {
+  return (
+    <ScrollView contentContainerStyle={{ paddingBottom: 24 }}>
+      <ModuleHeader title="Media" onBack={() => go('__back')} />
+      <View style={{ paddingHorizontal: 16 }}>
+        {MEDIA.map((m, i) => (
+          <View key={m.name} style={{ marginBottom: 12 }}>
+            <Card pad={14}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                <View style={{ width: 44, height: 44, borderRadius: 12, backgroundColor: C.accentDim,
+                  alignItems: 'center', justifyContent: 'center' }}>
+                  <NbIcon name={m.kind === 'music' ? 'music' : 'film'} size={22} color={C.accent} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    <Text style={{ fontFamily: FONTS.semibold, fontSize: 16, color: C.text }}>{m.name}</Text>
+                    <Dot tone={m.status === 'online' ? 'ok' : 'off'} />
+                  </View>
+                  <Text style={{ fontFamily: FONTS.mono, fontSize: 12, color: C.textDim }}>{m.lib}</Text>
+                  {m.status === 'online' && m.streams > 0 &&
+                    <Text style={{ fontFamily: FONTS.mono, fontSize: 12, color: C.ok }}>{m.streams} strumienie aktywne</Text>}
+                </View>
+              </View>
+            </Card>
+          </View>
+        ))}
+      </View>
+    </ScrollView>
+  );
+}
+
+// ── Antivirus ─────────────────────────────────────────────────────────────────
+function AntivirusScreen({ go }: any) {
+  const [scanning, setScanning] = useState(false);
+  const spin = useRef(new Animated.Value(0)).current;
+  const startScan = () => {
+    setScanning(true);
+    Animated.loop(Animated.timing(spin, { toValue: 1, duration: 1000, useNativeDriver: true })).start();
+    setTimeout(() => { setScanning(false); spin.stopAnimation(); spin.setValue(0); }, 3000);
+  };
+  const rotate = spin.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
+  return (
+    <ScrollView contentContainerStyle={{ paddingBottom: 24 }}>
+      <ModuleHeader title="Antywirus" onBack={() => go('__back')} />
+      <View style={{ paddingHorizontal: 16 }}>
+        <Card pad={18}>
+          <View style={{ alignItems: 'center', paddingVertical: 12 }}>
+            <Animated.View style={{ transform: [{ rotate: scanning ? rotate : '0deg' }] }}>
+              <NbIcon name="shield_check" size={64} color={CLAMAV.protected ? C.ok : C.danger} />
+            </Animated.View>
+            <Text style={{ fontFamily: FONTS.extrabold, fontSize: 22, color: C.text, marginTop: 12 }}>
+              {scanning ? 'Skanowanie…' : 'Chroniony'}
+            </Text>
+            <Text style={{ fontFamily: FONTS.regular, fontSize: 14, color: C.textDim, marginTop: 4 }}>
+              Ochrona w czasie rzeczywistym · {CLAMAV.lastScan}
+            </Text>
+          </View>
+        </Card>
+        <View style={{ height: 14 }} />
+        <View style={{ flexDirection: 'row', gap: 12 }}>
+          {[
+            { label: 'Zagrożenia', val: CLAMAV.threats, tone: 'ok' },
+            { label: 'Kwarantanna', val: CLAMAV.quarantine, tone: 'warn' },
+          ].map(item => (
+            <Card key={item.label} pad={14} style={{ flex: 1, alignItems: 'center' }}>
+              <Text style={{ fontFamily: FONTS.extrabold, fontSize: 28, color: item.tone === 'ok' ? C.ok : C.warn }}>{item.val}</Text>
+              <Text style={{ fontFamily: FONTS.regular, fontSize: 12, color: C.textDim }}>{item.label}</Text>
+            </Card>
+          ))}
+        </View>
+        <View style={{ height: 18 }} />
+        <TouchableOpacity onPress={startScan} disabled={scanning} activeOpacity={0.8}
+          style={{ height: 54, borderRadius: 14, backgroundColor: C.accent,
+            alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 10 }}>
+          {scanning ? <Spinner color="#08111c" /> : <NbIcon name="scan" size={20} color="#08111c" />}
+          <Text style={{ fontFamily: FONTS.bold, fontSize: 16, color: '#08111c' }}>
+            {scanning ? 'Skanowanie…' : 'Skanuj teraz'}
+          </Text>
+        </TouchableOpacity>
+      </View>
+    </ScrollView>
+  );
+}
+
+// ── UPS ───────────────────────────────────────────────────────────────────────
+function UpsScreen({ go }: any) {
+  return (
+    <ScrollView contentContainerStyle={{ paddingBottom: 24 }}>
+      <ModuleHeader title="Zasilanie (UPS)" onBack={() => go('__back')} />
+      <View style={{ paddingHorizontal: 16 }}>
+        <Card pad={18}>
+          <View style={{ alignItems: 'center', paddingVertical: 8 }}>
+            <Ring value={UPS.battery} size={110} sw={11} color={C.ok} label={`${UPS.battery}%`} sub="bateria" />
+            <Text style={{ fontFamily: FONTS.bold, fontSize: 16, color: C.text, marginTop: 16 }}>{UPS.model}</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 6 }}>
+              <Dot tone={UPS.mode === 'on_line' ? 'ok' : 'warn'} />
+              <Text style={{ fontFamily: FONTS.regular, fontSize: 14, color: UPS.mode === 'on_line' ? C.ok : C.warn }}>
+                {UPS.mode === 'on_line' ? 'Z sieci' : 'Na baterii'}
+              </Text>
             </View>
           </View>
+        </Card>
+        <View style={{ height: 14 }} />
+        <View style={{ flexDirection: 'row', gap: 12 }}>
+          {[
+            { label: 'Czas podtrzymania', val: UPS.runtime },
+            { label: 'Napięcie', val: `${UPS.voltage} V` },
+            { label: 'Obciążenie', val: `${UPS.load}%` },
+          ].map(item => (
+            <Card key={item.label} pad={14} style={{ flex: 1, alignItems: 'center' }}>
+              <Text style={{ fontFamily: FONTS.monobold, fontSize: 18, color: C.text }}>{item.val}</Text>
+              <Text style={{ fontFamily: FONTS.regular, fontSize: 11, color: C.textDim, marginTop: 3, textAlign: 'center' }}>{item.label}</Text>
+            </Card>
+          ))}
         </View>
-      ))}
+      </View>
     </ScrollView>
   );
 }
 
-// ── Logs Tab ──────────────────────────────────────────────────────
-
-function LogsTab({ serverUrl, userData }: { serverUrl: string; userData: Record<string, string> | null }) {
-  const [logs, setLogs]      = useState<LogEntry[]>([]);
-  const [loading, setLoad]   = useState(true);
-  const [error, setError]    = useState('');
-  const [refreshing, setRef] = useState(false);
-
-  const fetch_ = useCallback(async (isRef = false) => {
-    isRef ? setRef(true) : setLoad(true);
-    setError('');
-    try {
-      const res = await apiFetch(serverUrl, '/api/system/logs?n=100', userData);
-      const json = await res.json();
-      setLogs(Array.isArray(json) ? json : []);
-    } catch { setError('Nie można pobrać logów'); }
-    finally { setLoad(false); setRef(false); }
-  }, [serverUrl, userData]);
-
-  useEffect(() => { fetch_(); }, [fetch_]);
-
-  if (loading) return <LoadingView text="Ładowanie logów…" />;
-  if (error)   return <ErrorView msg={error} onRetry={fetch_} />;
-
+// ── Processes ─────────────────────────────────────────────────────────────────
+function ProcessesScreen({ go }: any) {
+  const [procs, setProcs] = useState(PROCESSES);
   return (
-    <ScrollView refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => fetch_(true)} tintColor={C.accent} />}>
-      {logs.length === 0 && (
-        <Text style={[s.loadTxt, { marginTop: 32, textAlign: 'center' }]}>Brak logów</Text>
-      )}
-      {logs.map((l, i) => (
-        <View key={i} style={[s.logCard, i > 0 && { borderTopWidth: 1, borderTopColor: C.border }]}>
-          <View style={s.row}>
-            <Text style={[s.logLevel, { color: logColor(l.level) }]}>{l.level.toUpperCase()}</Text>
-            <Text style={s.logTime} numberOfLines={1}>{l.time}</Text>
+    <ScrollView contentContainerStyle={{ paddingBottom: 24 }}>
+      <ModuleHeader title="Procesy" onBack={() => go('__back')} />
+      <View style={{ paddingHorizontal: 16 }}>
+        <Card pad={6}>
+          <View style={{ padding: 12, flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: C.border }}>
+            {['PID', 'Nazwa', 'CPU%', 'MEM%', ''].map((h, i) => (
+              <Text key={i} style={{ fontFamily: FONTS.monobold, fontSize: 11, color: C.textFaint,
+                flex: i === 1 ? 2 : 1, textAlign: i > 1 ? 'right' : 'left' }}>{h}</Text>
+            ))}
           </View>
-          <Text style={s.logSource}>{l.source}</Text>
-          <Text style={s.logText}>{l.message}</Text>
-        </View>
-      ))}
+          {procs.map((p, i) => (
+            <View key={p.pid} style={{ padding: 12, flexDirection: 'row', alignItems: 'center',
+              borderTopWidth: i ? 1 : 0, borderTopColor: C.border }}>
+              <Text style={{ fontFamily: FONTS.mono, fontSize: 12, color: C.textFaint, flex: 1 }}>{p.pid}</Text>
+              <Text style={{ fontFamily: FONTS.semibold, fontSize: 13, color: C.text, flex: 2 }} numberOfLines={1}>{p.name}</Text>
+              <Text style={{ fontFamily: FONTS.mono, fontSize: 12, color: p.cpu > 8 ? C.warn : C.textDim, flex: 1, textAlign: 'right' }}>{p.cpu}</Text>
+              <Text style={{ fontFamily: FONTS.mono, fontSize: 12, color: C.textDim, flex: 1, textAlign: 'right' }}>{p.mem}</Text>
+              <TouchableOpacity onPress={() => setProcs(ps => ps.filter(x => x.pid !== p.pid))}
+                style={{ padding: 4 }}>
+                <NbIcon name="x" size={16} color={C.danger} />
+              </TouchableOpacity>
+            </View>
+          ))}
+        </Card>
+      </View>
     </ScrollView>
   );
 }
 
-// ── Info Tab ──────────────────────────────────────────────────────
-
-function InfoRow({ k, v, mono }: { k: string; v: string; mono?: boolean }) {
+// ── Logs ──────────────────────────────────────────────────────────────────────
+function LogsScreen({ go }: any) {
+  const lvlColor = (lvl: string) => ({ info: C.textDim, warn: C.warn, err: C.danger }[lvl] || C.textDim);
   return (
-    <View style={[s.row, s.infoRow]}>
-      <Text style={s.infoKey}>{k}</Text>
-      <Text style={[s.infoVal, mono && { fontFamily: FONTS.mono }]} numberOfLines={1}>{v}</Text>
+    <ScrollView contentContainerStyle={{ paddingBottom: 24 }}>
+      <ModuleHeader title="Logi systemowe" onBack={() => go('__back')} />
+      <View style={{ paddingHorizontal: 16 }}>
+        <Card pad={6}>
+          {LOGS.map((entry, i) => (
+            <View key={i} style={{ padding: 12, borderTopWidth: i ? 1 : 0, borderTopColor: C.border }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                <Text style={{ fontFamily: FONTS.monobold, fontSize: 11, color: lvlColor(entry.lvl),
+                  textTransform: 'uppercase', minWidth: 36 }}>{entry.lvl}</Text>
+                <Text style={{ fontFamily: FONTS.mono, fontSize: 11, color: C.textFaint }}>{entry.t}</Text>
+                <Text style={{ fontFamily: FONTS.mono, fontSize: 11, color: C.accent }}>[{entry.src}]</Text>
+              </View>
+              <Text style={{ fontFamily: FONTS.mono, fontSize: 12, color: C.text, lineHeight: 18 }}>{entry.msg}</Text>
+            </View>
+          ))}
+        </Card>
+      </View>
+    </ScrollView>
+  );
+}
+
+// ── Users ─────────────────────────────────────────────────────────────────────
+function UsersScreen({ go }: any) {
+  const [users, setUsers] = useState(USERS_LIST);
+  return (
+    <ScrollView contentContainerStyle={{ paddingBottom: 24 }}>
+      <ModuleHeader title="Użytkownicy" onBack={() => go('__back')} />
+      <View style={{ paddingHorizontal: 16 }}>
+        <Card pad={6}>
+          {users.map((u, i) => (
+            <View key={u.name} style={{ borderTopWidth: i ? 1 : 0, borderTopColor: C.border, paddingHorizontal: 12 }}>
+              <Row icon="user" iconTone={u.on ? 'accent' : 'neutral'} title={u.name} sub={`${u.role} · ${u.groups}`}
+                trailing={<Toggle on={u.on} onChange={(v: boolean) => setUsers((us: typeof USERS_LIST) => us.map((x, j) => j === i ? { ...x, on: v } : x))} />} />
+            </View>
+          ))}
+        </Card>
+      </View>
+    </ScrollView>
+  );
+}
+
+// ── Notifications ─────────────────────────────────────────────────────────────
+function NotificationsScreen({ go }: any) {
+  const icon = (lvl: string) => lvl === 'warn' ? 'alert' : lvl === 'ok' ? 'check' : 'bell';
+  const color = (lvl: string) => lvl === 'warn' ? C.warn : lvl === 'ok' ? C.ok : C.accent;
+  return (
+    <ScrollView contentContainerStyle={{ paddingBottom: 24 }}>
+      <ModuleHeader title="Powiadomienia" onBack={() => go('__back')} />
+      <View style={{ paddingHorizontal: 16 }}>
+        <Card pad={6}>
+          {ALERTS.map((a, i) => (
+            <View key={i} style={{ flexDirection: 'row', gap: 12, padding: 14,
+              borderTopWidth: i ? 1 : 0, borderTopColor: C.border }}>
+              <View style={{ width: 38, height: 38, borderRadius: 11, backgroundColor: C.surface2,
+                alignItems: 'center', justifyContent: 'center' }}>
+                <NbIcon name={icon(a.lvl)} size={19} color={color(a.lvl)} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                  <Text style={{ fontFamily: FONTS.semibold, fontSize: 14.5, color: C.text }}>{a.title}</Text>
+                  <Text style={{ fontFamily: FONTS.regular, fontSize: 11.5, color: C.textFaint }}>{a.time}</Text>
+                </View>
+                <Text style={{ fontFamily: FONTS.regular, fontSize: 13, color: C.textDim, marginTop: 3 }}>{a.text}</Text>
+              </View>
+            </View>
+          ))}
+        </Card>
+      </View>
+    </ScrollView>
+  );
+}
+
+// ── Terminal ──────────────────────────────────────────────────────────────────
+function TerminalScreen({ go }: any) {
+  const [lines, setLines] = useState(['nimbus@nas:~$ ', '']);
+  const [input, setInput] = useState('');
+  const send = () => {
+    if (!input.trim()) return;
+    setLines(ls => [...ls.slice(0, -1), `nimbus@nas:~$ ${input}`, `bash: ${input}: command not found`, '']);
+    setInput('');
+  };
+  return (
+    <View style={{ flex: 1, backgroundColor: '#0a0c0f' }}>
+      <ModuleHeader title="Terminal" onBack={() => go('__back')} />
+      <ScrollView style={{ flex: 1, paddingHorizontal: 14 }}>
+        {lines.map((l, i) => (
+          <Text key={i} style={{ fontFamily: FONTS.mono, fontSize: 13, color: l.includes('command not found') ? C.danger : C.text, lineHeight: 22 }}>{l}</Text>
+        ))}
+      </ScrollView>
+      <View style={{ flexDirection: 'row', padding: 12, gap: 10, borderTopWidth: 1, borderTopColor: C.border }}>
+        <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', backgroundColor: C.surface2,
+          borderRadius: 10, paddingHorizontal: 12, borderWidth: 1, borderColor: C.border }}>
+          <Text style={{ fontFamily: FONTS.mono, fontSize: 13, color: C.ok }}>$ </Text>
+          <TextInput value={input} onChangeText={setInput} onSubmitEditing={send}
+            style={{ flex: 1, fontFamily: FONTS.mono, fontSize: 13, color: C.text, height: 42 }}
+            placeholderTextColor={C.textFaint} placeholder="Wpisz polecenie…" autoCapitalize="none" autoCorrect={false} />
+        </View>
+        <TouchableOpacity onPress={send} activeOpacity={0.8}
+          style={{ width: 42, height: 42, borderRadius: 10, backgroundColor: C.accent,
+            alignItems: 'center', justifyContent: 'center' }}>
+          <NbIcon name="arrow_up" size={18} color="#08111c" />
+        </TouchableOpacity>
+      </View>
     </View>
   );
 }
 
-function InfoTab({ serverUrl, userData, onLogout }: {
-  serverUrl: string; userData: Record<string, string> | null; onLogout: () => void;
-}) {
-  const [ov, setOv]          = useState<Overview | null>(null);
-  const [loading, setLoad]   = useState(true);
-  const [refreshing, setRef] = useState(false);
-
-  const fetch_ = useCallback(async (isRef = false) => {
-    isRef ? setRef(true) : setLoad(true);
-    try {
-      const res = await apiFetch(serverUrl, '/api/overview', userData);
-      setOv(await res.json());
-    } catch { /* keep previous */ }
-    finally { setLoad(false); setRef(false); }
-  }, [serverUrl, userData]);
-
-  useEffect(() => { fetch_(); }, [fetch_]);
-
+// ── Settings ──────────────────────────────────────────────────────────────────
+function SettingsScreen({ go, onLogout }: any) {
   return (
-    <ScrollView refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => fetch_(true)} tintColor={C.accent} />}>
-      {loading && !ov ? <LoadingView text="Ładowanie…" /> : ov ? (
-        <>
-          <View style={s.card}>
-            <InfoRow k="Hostname" v={ov.hostname} />
-            <InfoRow k="Uptime"   v={formatUptime(ov.uptime_secs)} />
-            <InfoRow k="Kernel"   v={ov.kernel} mono />
+    <ScrollView contentContainerStyle={{ paddingBottom: 24 }}>
+      <ModuleHeader title="Ustawienia" onBack={() => go('__back')} />
+      <View style={{ paddingHorizontal: 16 }}>
+        <Card pad={6}>
+          <View style={{ paddingHorizontal: 12 }}>
+            <Row icon="server" iconTone="accent" title="Serwer" sub={SERVER.host} />
           </View>
-
-          <SLabel label="PROCESOR" />
-          <View style={s.card}>
-            <Text style={[s.sub, { marginBottom: 8 }]} numberOfLines={2}>{ov.cpu.model}</Text>
-            <View style={s.row}>
-              <Text style={s.sub}>{ov.cpu.cores} rdzenie · {ov.cpu.freq_ghz} GHz</Text>
-              <Text style={[s.sub, { color: ov.cpu.percent > 80 ? C.red : C.accent }]}>{ov.cpu.percent.toFixed(1)}%</Text>
-            </View>
-            <StatBar pct={ov.cpu.percent} color={ov.cpu.percent > 80 ? C.red : C.accent} />
-            <View style={[s.row, { marginTop: 6 }]}>
-              <Text style={s.sub}>Temp: {ov.cpu.temp.toFixed(1)}°C</Text>
-              <Text style={s.sub}>Load: {ov.cpu.load.map(l => l.toFixed(2)).join(' / ')}</Text>
-            </View>
+          <View style={{ height: 1, backgroundColor: C.border }} />
+          <View style={{ paddingHorizontal: 12 }}>
+            <Row icon="user" iconTone="accent" title="Konto" sub="admin" />
           </View>
-
-          <SLabel label="PAMIĘĆ RAM" />
-          <View style={s.card}>
-            <View style={s.row}>
-              <Text style={s.sub}>Użyte: {(ov.memory as any).used_gb?.toFixed(1)} / {ov.memory.total_gb.toFixed(1)} GB</Text>
-              <Text style={[s.sub, { color: ov.memory.percent > 85 ? C.red : C.accent }]}>{ov.memory.percent.toFixed(0)}%</Text>
-            </View>
-            <StatBar pct={ov.memory.percent} color={ov.memory.percent > 85 ? C.red : C.accent} />
-            <View style={[s.row, { marginTop: 6 }]}>
-              <Text style={s.sub}>Dostępne: {ov.memory.avail_gb.toFixed(1)} GB</Text>
-              <Text style={s.sub}>Cache: {ov.memory.cached_gb.toFixed(1)} GB</Text>
-            </View>
+          <View style={{ height: 1, backgroundColor: C.border }} />
+          <View style={{ paddingHorizontal: 12 }}>
+            <Row icon="activity" iconTone="ok" title="Nimbus" sub={`${SERVER.version} · ${SERVER.os}`} />
           </View>
-
-          {ov.memory.swap_total_gb > 0 && (
-            <>
-              <SLabel label="SWAP" />
-              <View style={s.card}>
-                <View style={s.row}>
-                  <Text style={s.sub}>{ov.memory.swap_used_gb.toFixed(2)} / {ov.memory.swap_total_gb.toFixed(2)} GB</Text>
-                  <Text style={s.sub}>{((ov.memory.swap_used_gb / ov.memory.swap_total_gb) * 100).toFixed(0)}%</Text>
-                </View>
-                <StatBar pct={(ov.memory.swap_used_gb / ov.memory.swap_total_gb) * 100} color={C.yellow} />
-              </View>
-            </>
-          )}
-        </>
-      ) : null}
-
-      <SLabel label="POŁĄCZENIE" />
-      <View style={s.card}>
-        <InfoRow k="Serwer"     v={serverUrl.replace(/^https?:\/\//, '')} mono />
-        <InfoRow k="Użytkownik" v={userData?.username ?? 'admin'} />
-        <InfoRow k="Status"     v="Online" />
+        </Card>
+        <View style={{ height: 24 }} />
+        <TouchableOpacity onPress={onLogout} activeOpacity={0.8}
+          style={{ height: 54, borderRadius: 14, backgroundColor: C.dangerDim,
+            borderWidth: 1, borderColor: C.danger, alignItems: 'center', justifyContent: 'center',
+            flexDirection: 'row', gap: 10 }}>
+          <NbIcon name="logout" size={20} color={C.danger} />
+          <Text style={{ fontFamily: FONTS.bold, fontSize: 16, color: C.danger }}>Wyloguj się</Text>
+        </TouchableOpacity>
       </View>
-
-      <TouchableOpacity onPress={onLogout} style={s.logoutBtn}>
-        <Text style={s.logoutTxt}>↩  Wyloguj się</Text>
-      </TouchableOpacity>
     </ScrollView>
   );
 }
 
-// ── Nav config ────────────────────────────────────────────────────
-
-const NAV: { id: TabId; icon: string; label: string }[] = [
-  { id: 'dashboard', icon: '📊', label: 'Pulpit'  },
-  { id: 'disks',     icon: '💾', label: 'Dyski'   },
-  { id: 'docker',    icon: '🐳', label: 'Docker'  },
-  { id: 'net',       icon: '🌐', label: 'Sieć'    },
-  { id: 'services',  icon: '⚙️',  label: 'Usługi'  },
-  { id: 'logs',      icon: '📋', label: 'Logi'    },
-  { id: 'info',      icon: 'ℹ️',  label: 'Info'    },
+// ── More grid ─────────────────────────────────────────────────────────────────
+const MODULE_META = [
+  { id: 'media', icon: 'film', tone: 'accent', label: 'Media' },
+  { id: 'antivirus', icon: 'shield_check', tone: 'ok', label: 'Antywirus' },
+  { id: 'ups', icon: 'battery', tone: 'ok', label: 'Zasilanie' },
+  { id: 'processes', icon: 'activity', tone: 'accent', label: 'Procesy' },
+  { id: 'logs', icon: 'file', tone: 'neutral', label: 'Logi' },
+  { id: 'users', icon: 'users', tone: 'accent', label: 'Użytkownicy' },
+  { id: 'notifications', icon: 'bell', tone: 'warn', label: 'Powiadomienia' },
+  { id: 'terminal', icon: 'terminal', tone: 'neutral', label: 'Terminal' },
+  { id: 'settings', icon: 'settings', tone: 'neutral', label: 'Ustawienia' },
 ];
 
-const TAB_TITLES: Record<TabId, string> = {
-  dashboard: 'Pulpit', disks: 'Dyski', docker: 'Docker',
-  net: 'Sieć', services: 'Usługi', logs: 'Logi', info: 'Info',
+const TONE_COLORS: Record<string, [string, string]> = {
+  accent:  [C.accent,  C.accentDim],
+  ok:      [C.ok,      C.okDim],
+  warn:    [C.warn,    C.warnDim],
+  neutral: [C.textDim, 'rgba(255,255,255,0.05)'],
 };
 
-// ── Drawer ────────────────────────────────────────────────────────
-
-function Drawer({ open, activeTab, onSelect, onClose, serverUrl, username, onLogout }: {
-  open: boolean; activeTab: TabId;
-  onSelect: (id: TabId) => void; onClose: () => void;
-  serverUrl: string; username: string; onLogout: () => void;
-}) {
-  const anim     = useRef(new Animated.Value(-DRAWER_W)).current;
-  const opacAnim = useRef(new Animated.Value(0)).current;
-  const [visible, setVisible] = useState(false);
-
-  useEffect(() => {
-    if (open) {
-      setVisible(true);
-      Animated.parallel([
-        Animated.spring(anim,     { toValue: 0,        tension: 80, friction: 14, useNativeDriver: true }),
-        Animated.timing(opacAnim, { toValue: 1, duration: 200,      useNativeDriver: true }),
-      ]).start();
-    } else {
-      Animated.parallel([
-        Animated.spring(anim,     { toValue: -DRAWER_W, tension: 80, friction: 14, useNativeDriver: true }),
-        Animated.timing(opacAnim, { toValue: 0, duration: 200,       useNativeDriver: true }),
-      ]).start(() => setVisible(false));
-    }
-  }, [open]);
-
-  if (!visible) return null;
-
-  const display = serverUrl.replace(/^https?:\/\//, '').replace(/\/+$/, '');
-
+function MoreGrid({ go }: any) {
   return (
-    <View style={StyleSheet.absoluteFillObject} pointerEvents="box-none">
-      <TouchableWithoutFeedback onPress={onClose}>
-        <Animated.View style={[s.backdrop, { opacity: opacAnim }]} />
-      </TouchableWithoutFeedback>
-
-      <Animated.View style={[s.drawerPanel, { transform: [{ translateX: anim }] }]}>
-        <View style={s.drawerHeader}>
-          <NasIcon size={32} />
-          <View style={{ marginLeft: 12 }}>
-            <Text style={s.drawerAppName}>Nimbus</Text>
-            <Text style={s.drawerServer}>{display}</Text>
-          </View>
+    <ScrollView contentContainerStyle={{ paddingBottom: 24 }}>
+      <ModuleHeader title="Więcej" />
+      <View style={{ paddingHorizontal: 16 }}>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
+          {MODULE_META.map(m => {
+            const [fg, bg] = TONE_COLORS[m.tone] || TONE_COLORS.accent;
+            return (
+              <TouchableOpacity key={m.id} onPress={() => go(m.id)} activeOpacity={0.75}
+                style={[styles.moreCard, { width: '30%' }]}>
+                <View style={{ width: 46, height: 46, borderRadius: 13, backgroundColor: bg,
+                  alignItems: 'center', justifyContent: 'center' }}>
+                  <NbIcon name={m.icon} size={23} color={fg} />
+                </View>
+                <Text style={{ fontFamily: FONTS.semibold, fontSize: 12.5, color: C.text, marginTop: 8, textAlign: 'center', lineHeight: 17 }}>{m.label}</Text>
+              </TouchableOpacity>
+            );
+          })}
         </View>
+      </View>
+    </ScrollView>
+  );
+}
 
-        <View style={s.drawerDivider} />
+// ── Bottom Nav ────────────────────────────────────────────────────────────────
+const TABS = [
+  { id: 'dashboard', icon: 'gauge', label: 'Pulpit' },
+  { id: 'storage', icon: 'database', label: 'Magazyn' },
+  { id: 'docker', icon: 'box', label: 'Docker' },
+  { id: 'network', icon: 'globe', label: 'Sieć' },
+  { id: 'more', icon: 'grid', label: 'Więcej' },
+];
 
-        <View style={s.drawerUserRow}>
-          <View style={[s.dot, { backgroundColor: C.green }]} />
-          <Text style={s.drawerUser}>{username || 'admin'}</Text>
-        </View>
-
-        <View style={s.drawerDivider} />
-
-        <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
-          {NAV.map(n => (
-            <TouchableOpacity
-              key={n.id}
-              onPress={() => { onSelect(n.id); onClose(); }}
-              style={[s.navItem, activeTab === n.id && s.navItemActive]}
-            >
-              <Text style={s.navIcon}>{n.icon}</Text>
-              <Text style={[s.navLabel, activeTab === n.id && s.navLabelActive]}>{n.label}</Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-
-        <View style={s.drawerDivider} />
-
-        <TouchableOpacity onPress={() => { onClose(); onLogout(); }} style={s.drawerLogout}>
-          <Text style={s.drawerLogoutTxt}>↩  Wyloguj się</Text>
-        </TouchableOpacity>
-      </Animated.View>
+function BottomNav({ tab, onTab }: any) {
+  return (
+    <View style={styles.bottomNav}>
+      {TABS.map(it => {
+        const on = tab === it.id;
+        return (
+          <TouchableOpacity key={it.id} onPress={() => onTab(it.id)} activeOpacity={0.7} style={styles.navItem}>
+            <View style={[styles.navPill, on && styles.navPillActive]}>
+              <NbIcon name={it.icon} size={22} color={on ? C.accent : C.textFaint} stroke={on ? 2 : 1.8} />
+            </View>
+            <Text style={[styles.navLabel, on && styles.navLabelActive]}>{it.label}</Text>
+          </TouchableOpacity>
+        );
+      })}
     </View>
   );
 }
 
-// ── HomeScreen ────────────────────────────────────────────────────
+// ── HomeScreen (main shell) ───────────────────────────────────────────────────
+const TAB_IDS = TABS.map(t => t.id);
 
 interface Props {
-  serverUrl: string;
-  userData: Record<string, string> | null;
+  serverUrl?: string;
+  userData?: any;
   onLogout: () => void;
 }
 
-export default function HomeScreen({ serverUrl, userData, onLogout }: Props) {
-  const [tab, setTab]           = useState<TabId>('dashboard');
-  const [drawerOpen, setDrawer] = useState(false);
-  const display = serverUrl.replace(/^https?:\/\//, '').replace(/\/+$/, '');
+export default function HomeScreen({ onLogout }: Props) {
+  const [tab, setTab] = useState('dashboard');
+  const [stack, setStack] = useState<string | null>(null);
+  const prevTab = useRef('dashboard');
+
+  const go = (target: string) => {
+    if (target === '__logout') { setStack(null); setTab('dashboard'); onLogout(); return; }
+    if (target === '__back') { setStack(null); return; }
+    if (TAB_IDS.includes(target)) { setStack(null); setTab(target); return; }
+    prevTab.current = tab; setStack(target);
+  };
+
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (stack) { setStack(null); return true; }
+      return false;
+    });
+    return () => sub.remove();
+  }, [stack]);
+
+  const tabView = {
+    dashboard: <Dashboard go={go} />,
+    storage: <StorageScreen go={go} />,
+    docker: <DockerScreen go={go} />,
+    network: <NetworkScreen go={go} />,
+    more: <MoreGrid go={go} />,
+  }[tab];
+
+  const stackView = stack && {
+    media: <MediaScreen go={go} />,
+    antivirus: <AntivirusScreen go={go} />,
+    ups: <UpsScreen go={go} />,
+    processes: <ProcessesScreen go={go} />,
+    logs: <LogsScreen go={go} />,
+    users: <UsersScreen go={go} />,
+    notifications: <NotificationsScreen go={go} />,
+    terminal: <TerminalScreen go={go} />,
+    settings: <SettingsScreen go={go} onLogout={() => go('__logout')} />,
+  }[stack];
 
   return (
-    <View style={s.root}>
-      <GridBg />
-
-      <View style={s.topBar}>
-        <TouchableOpacity onPress={() => setDrawer(true)} style={s.hamburger}>
-          <Text style={s.hamburgerIcon}>☰</Text>
-        </TouchableOpacity>
-        <View style={{ flex: 1, marginLeft: 12 }}>
-          <Text style={s.pageTitle}>{TAB_TITLES[tab]}</Text>
-          <Text style={s.serverAddr}>{display}</Text>
+    <View style={styles.root}>
+      <View style={{ flex: 1 }}>{tabView}</View>
+      <BottomNav tab={tab} onTab={(id: string) => { setStack(null); setTab(id); }} />
+      {stack && (
+        <View style={StyleSheet.absoluteFillObject}>
+          <View style={styles.stackScreen}>{stackView}</View>
         </View>
-        <View style={s.userBadge}>
-          <Text style={s.userLabel}>{userData?.username || 'admin'}</Text>
-        </View>
-      </View>
-
-      <View style={s.divider} />
-
-      <View style={s.content}>
-        {tab === 'dashboard' && <DashboardTab serverUrl={serverUrl} userData={userData} />}
-        {tab === 'disks'     && <DisksTab     serverUrl={serverUrl} userData={userData} />}
-        {tab === 'docker'    && <DockerTab    serverUrl={serverUrl} userData={userData} />}
-        {tab === 'net'       && <NetworkTab   serverUrl={serverUrl} userData={userData} />}
-        {tab === 'services'  && <ServicesTab  serverUrl={serverUrl} userData={userData} />}
-        {tab === 'logs'      && <LogsTab      serverUrl={serverUrl} userData={userData} />}
-        {tab === 'info'      && <InfoTab      serverUrl={serverUrl} userData={userData} onLogout={onLogout} />}
-      </View>
-
-      <Drawer
-        open={drawerOpen}
-        activeTab={tab}
-        onSelect={setTab}
-        onClose={() => setDrawer(false)}
-        serverUrl={serverUrl}
-        username={userData?.username ?? ''}
-        onLogout={onLogout}
-      />
+      )}
     </View>
   );
 }
 
-// ── Styles ────────────────────────────────────────────────────────
-
-const s = StyleSheet.create({
-  root:    { flex: 1, backgroundColor: C.bg },
-  content: { flex: 1, paddingHorizontal: 16 },
-  divider: { height: 1, backgroundColor: C.surface },
-
-  topBar:        { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 10 },
-  hamburger:     { width: 36, height: 36, borderRadius: 10, backgroundColor: C.surface, borderWidth: 1, borderColor: C.border, alignItems: 'center', justifyContent: 'center' },
-  hamburgerIcon: { color: C.textSub, fontSize: 18 },
-  pageTitle:     { fontSize: 16, fontFamily: FONTS.bold, color: C.text, lineHeight: 20 },
-  serverAddr:    { fontSize: 10, fontFamily: FONTS.mono, color: C.textMute },
-  userBadge:     { paddingVertical: 4, paddingHorizontal: 10, borderRadius: 20, backgroundColor: C.greenBg, borderWidth: 1, borderColor: 'rgba(49,170,64,0.3)' },
-  userLabel:     { fontSize: 11, color: C.green, fontFamily: FONTS.semibold },
-
-  center:   { flex: 1, alignItems: 'center', justifyContent: 'center', paddingTop: 40 },
-  loadTxt:  { color: C.textMute, fontFamily: FONTS.regular, fontSize: 13, marginTop: 12 },
-  errTxt:   { color: C.red, fontFamily: FONTS.regular, fontSize: 13, textAlign: 'center', paddingHorizontal: 20 },
-  retryBtn: { marginTop: 14, paddingVertical: 8, paddingHorizontal: 20, borderRadius: 8, borderWidth: 1, borderColor: C.border },
-  retryTxt: { color: C.accent, fontFamily: FONTS.medium, fontSize: 13 },
-  row:      { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  sub:      { fontSize: 11, color: C.textMute, fontFamily: FONTS.regular },
-  sectionLabel: { fontSize: 10, fontFamily: FONTS.bold, color: C.textMute, letterSpacing: 1.2, marginTop: 16, marginBottom: 2, textTransform: 'uppercase' },
-  dot:      { width: 8, height: 8, borderRadius: 4, backgroundColor: C.green, marginRight: 8 },
-
-  card:       { marginTop: 8, padding: 13, borderRadius: 12, backgroundColor: C.surface, borderWidth: 1, borderColor: C.border },
-  cardWarn:   { borderColor: 'rgba(244,149,0,0.35)' },
-  cardTitle:  { fontSize: 14, fontFamily: FONTS.bold, color: C.text, marginBottom: 2 },
-  cardSub:    { fontSize: 11, fontFamily: FONTS.mono, color: C.textMute },
-  badge:      { paddingVertical: 3, paddingHorizontal: 8, borderRadius: 20, backgroundColor: C.greenBg, borderWidth: 1, borderColor: 'rgba(49,170,64,0.3)' },
-  badgeWarn:  { backgroundColor: 'rgba(22,16,0,1)', borderColor: 'rgba(244,149,0,0.3)' },
-  badgeDown:  { backgroundColor: C.surface, borderColor: C.border },
-  badgeTxt:   { fontSize: 10, fontFamily: FONTS.bold, letterSpacing: 0.7, color: C.green },
-  barTrack:   { height: 5, backgroundColor: 'rgba(24,32,40,1)', borderRadius: 3, overflow: 'hidden', marginVertical: 8 },
-  barFill:    { height: '100%', borderRadius: 3 },
-  ioBar:      { borderTopWidth: 1, borderTopColor: C.border, paddingTop: 8, marginTop: 4 },
-  ioTxt:      { fontSize: 11, fontFamily: FONTS.mono, color: C.textSub },
-  statusPill: { paddingVertical: 3, paddingHorizontal: 8, borderRadius: 20, borderWidth: 1 },
-
-  metricLabel:  { fontSize: 12, color: C.textSub, fontFamily: FONTS.regular },
-  metricVal:    { fontSize: 12, fontFamily: FONTS.bold },
-  summaryRow:   { flexDirection: 'row', gap: 8, marginTop: 8 },
-  summaryCard:  { flex: 1, padding: 12, borderRadius: 12, backgroundColor: C.surface, borderWidth: 1, borderColor: C.border, alignItems: 'center', gap: 4 },
-  summaryVal:   { fontSize: 18, fontFamily: FONTS.bold, color: C.text },
-  summaryLabel: { fontSize: 10, color: C.textMute, fontFamily: FONTS.medium, textAlign: 'center' },
-  logLine:  { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
-  logDot:   { width: 6, height: 6, borderRadius: 3, marginTop: 4 },
-  logMsg:   { flex: 1, fontSize: 11, color: C.textSub, fontFamily: FONTS.regular },
-
-  actionBtn:    { paddingVertical: 6, paddingHorizontal: 14, borderRadius: 8, borderWidth: 1 },
-  actionBtnTxt: { fontSize: 12, fontFamily: FONTS.semibold },
-
-  hostRow:    { marginTop: 12, padding: 10, paddingHorizontal: 12, borderRadius: 8, backgroundColor: C.surface, borderWidth: 1, borderColor: C.border },
-  hostLabel:  { fontSize: 10, fontFamily: FONTS.bold, color: C.textMute, letterSpacing: 1.0 },
-  hostVal:    { fontSize: 13, fontFamily: FONTS.mono, color: C.accent },
-  speedBadge: { marginLeft: 8, paddingVertical: 2, paddingHorizontal: 7, borderRadius: 6, backgroundColor: C.accentBg, borderWidth: 1, borderColor: 'rgba(0,194,233,0.25)' },
-  speedTxt:   { fontSize: 10, fontFamily: FONTS.mono, color: C.accent },
-  netMeta:    { fontSize: 11, fontFamily: FONTS.mono, color: C.textSub, marginTop: 4 },
-
-  logCard:   { padding: 12, backgroundColor: C.surface },
-  logLevel:  { fontSize: 10, fontFamily: FONTS.bold, letterSpacing: 0.8 },
-  logTime:   { fontSize: 10, color: C.textMute, fontFamily: FONTS.mono, flex: 1, textAlign: 'right' },
-  logSource: { fontSize: 11, color: C.textMute, fontFamily: FONTS.mono, marginTop: 2 },
-  logText:   { fontSize: 12, color: C.textSub, fontFamily: FONTS.regular, marginTop: 4 },
-
-  infoRow: { paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: C.bg },
-  infoKey: { fontSize: 12, color: C.textMute, fontFamily: FONTS.semibold, textTransform: 'uppercase', letterSpacing: 0.7, flex: 1 },
-  infoVal: { fontSize: 12, color: C.textSub, fontFamily: FONTS.regular, flex: 2, textAlign: 'right' },
-  logoutBtn: { marginTop: 8, marginBottom: 16, padding: 14, borderRadius: 10, backgroundColor: 'rgba(22,3,3,1)', borderWidth: 1, borderColor: 'rgba(241,77,76,0.3)', alignItems: 'center' },
-  logoutTxt: { fontSize: 14, color: C.red, fontFamily: FONTS.medium },
-
-  backdrop:      { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.55)' },
-  drawerPanel:   { position: 'absolute', left: 0, top: 0, bottom: 0, width: DRAWER_W, backgroundColor: '#07101a', borderRightWidth: 1, borderRightColor: C.borderHi },
-  drawerHeader:  { flexDirection: 'row', alignItems: 'center', padding: 20, paddingTop: 24 },
-  drawerAppName: { fontSize: 18, fontFamily: FONTS.bold, color: C.text },
-  drawerServer:  { fontSize: 10, fontFamily: FONTS.mono, color: C.textMute },
-  drawerDivider: { height: 1, backgroundColor: C.border, marginHorizontal: 16 },
-  drawerUserRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 12 },
-  drawerUser:    { fontSize: 13, fontFamily: FONTS.medium, color: C.green },
-  navItem:       { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 20, gap: 14 },
-  navItemActive: { backgroundColor: C.accentBg, borderRightWidth: 3, borderRightColor: C.accent },
-  navIcon:       { fontSize: 20, width: 28 },
-  navLabel:      { fontSize: 15, fontFamily: FONTS.medium, color: C.textSub },
-  navLabelActive:{ color: C.accent, fontFamily: FONTS.bold },
-  drawerLogout:  { padding: 20, paddingVertical: 16 },
-  drawerLogoutTxt: { fontSize: 14, color: C.red, fontFamily: FONTS.medium },
+const styles = StyleSheet.create({
+  root: { flex: 1, backgroundColor: C.bg },
+  sLabel: { fontFamily: FONTS.bold, fontSize: 13, letterSpacing: 0.5, textTransform: 'uppercase', color: C.textFaint },
+  bottomNav: {
+    flexDirection: 'row', backgroundColor: C.surface,
+    borderTopWidth: 1, borderTopColor: C.border,
+    paddingTop: 8, paddingBottom: 6, paddingHorizontal: 6,
+  },
+  navItem: { flex: 1, alignItems: 'center', gap: 4 },
+  navPill: { paddingHorizontal: 16, paddingVertical: 3, borderRadius: 99 },
+  navPillActive: { backgroundColor: C.accentDim },
+  navLabel: { fontFamily: FONTS.medium, fontSize: 10.5, color: C.textFaint },
+  navLabelActive: { fontFamily: FONTS.bold, color: C.accent },
+  moreCard: {
+    backgroundColor: C.surface, borderRadius: 18, borderWidth: 1, borderColor: C.border,
+    padding: 14, alignItems: 'center', justifyContent: 'center', minHeight: 96,
+  },
+  stackScreen: { flex: 1, backgroundColor: C.bg },
 });
