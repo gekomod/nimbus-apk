@@ -1,81 +1,55 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Animated, BackHandler, Dimensions, StyleSheet, View } from 'react-native';
+import React, { useCallback, useEffect, useState } from 'react';
+import { StyleSheet, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
 import Constants from 'expo-constants';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
+import { useFonts } from 'expo-font';
 import {
-  useFonts,
-  SpaceGrotesk_400Regular, SpaceGrotesk_500Medium,
-  SpaceGrotesk_600SemiBold, SpaceGrotesk_700Bold,
-} from '@expo-google-fonts/space-grotesk';
-import { JetBrainsMono_400Regular, JetBrainsMono_500Medium } from '@expo-google-fonts/jetbrains-mono';
+  HankenGrotesk_400Regular,
+  HankenGrotesk_600SemiBold,
+  HankenGrotesk_700Bold,
+  HankenGrotesk_800ExtraBold,
+} from '@expo-google-fonts/hanken-grotesk';
+import { JetBrainsMono_400Regular, JetBrainsMono_500Medium, JetBrainsMono_700Bold } from '@expo-google-fonts/jetbrains-mono';
 
-import WelcomeScreen from './src/screens/WelcomeScreen';
-import ServerScreen  from './src/screens/ServerScreen';
-import LoginScreen   from './src/screens/LoginScreen';
-import SuccessScreen from './src/screens/SuccessScreen';
-import HomeScreen    from './src/screens/HomeScreen';
-import UpdateModal   from './src/components/UpdateModal';
+import LoginScreen from './src/screens/LoginScreen';
+import HomeScreen from './src/screens/HomeScreen';
+import UpdateModal from './src/components/UpdateModal';
 import { loadSettings, saveSettings, clearSettings } from './src/storage';
 import { checkForUpdate, UpdateInfo } from './src/checkUpdate';
 import { C } from './src/tokens';
 
 SplashScreen.preventAutoHideAsync();
 
-const { width: W } = Dimensions.get('window');
-type UserData = Record<string, string> | null;
-
 function AppInner() {
-  const [step, setStep]           = useState(0);
-  const [serverUrl, setSrv]       = useState('http://192.168.1.100:5000');
-  const [savedUsername, setSaved] = useState('');
-  const [savedPassword, setSavedPass] = useState('');
-  const [userData, setData]       = useState<UserData>(null);
+  const [phase, setPhase] = useState<'login' | 'app'>('login');
+  const [serverUrl, setServerUrl] = useState('http://192.168.1.10');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   const [settingsLoaded, setLoaded] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
-  const slideAnim = useRef(new Animated.Value(0)).current;
 
   const [fontsLoaded] = useFonts({
-    SpaceGrotesk_400Regular, SpaceGrotesk_500Medium,
-    SpaceGrotesk_600SemiBold, SpaceGrotesk_700Bold,
-    JetBrainsMono_400Regular, JetBrainsMono_500Medium,
+    HankenGrotesk_400Regular,
+    HankenGrotesk_600SemiBold,
+    HankenGrotesk_700Bold,
+    HankenGrotesk_800ExtraBold,
+    JetBrainsMono_400Regular,
+    JetBrainsMono_500Medium,
+    JetBrainsMono_700Bold,
   });
 
-  // Auto-login on startup
   useEffect(() => {
-    loadSettings().then(async ({ serverUrl: url, username, password }) => {
-      if (url) setSrv(url);
-      if (username) setSaved(username);
-      if (password) setSavedPass(password);
-
-      if (url && username && password) {
-        // Attempt auto-login
-        try {
-          const base = url.startsWith('http') ? url : 'http://' + url;
-          const res = await fetch(`${base.replace(/\/+$/, '')}/api/login`, {
-            method: 'POST',
-            credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username, password }),
-          });
-          if (res.ok) {
-            const data = await res.json().catch(() => ({}));
-            setData({ ...data, username });
-            setStep(4); // go straight to HomeScreen
-            setLoaded(true);
-            return;
-          }
-        } catch { /* fall through to login screen */ }
-        setStep(2); // show login with pre-filled fields
-      } else if (url) {
-        setStep(2);
-      }
+    loadSettings().then(({ serverUrl: url, username: u, password: p }) => {
+      if (url) setServerUrl(url);
+      if (u) setUsername(u);
+      if (p) setPassword(p);
+      if (url && u && p) setPhase('app');
       setLoaded(true);
     });
   }, []);
 
-  // Check for app updates on startup
   useEffect(() => {
     const current = Constants.expoConfig?.version ?? '1.0.0';
     checkForUpdate(current).then(info => { if (info) setUpdateInfo(info); });
@@ -85,62 +59,37 @@ function AppInner() {
     if (fontsLoaded && settingsLoaded) await SplashScreen.hideAsync();
   }, [fontsLoaded, settingsLoaded]);
 
-  function goTo(next: number) {
-    const dir = next > step ? 1 : -1;
-    slideAnim.setValue(dir * W);
-    setStep(next);
-    Animated.spring(slideAnim, { toValue: 0, tension: 80, friction: 14, useNativeDriver: true }).start();
-  }
-
-  useEffect(() => {
-    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (step === 1) { goTo(0); return true; }
-      if (step === 2) { goTo(savedUsername ? 0 : 1); return true; }
-      return false;
-    });
-    return () => sub.remove();
-  }, [step, savedUsername]);
-
   if (!fontsLoaded || !settingsLoaded) return null;
 
-  function renderScreen() {
-    switch (step) {
-      case 0: return <WelcomeScreen onNext={() => goTo(1)} />;
-      case 1: return (
-        <ServerScreen onNext={() => goTo(2)} onBack={() => goTo(0)}
-          serverUrl={serverUrl} setServerUrl={setSrv} />
-      );
-      case 2: return (
-        <LoginScreen
-          onBack={() => { savedUsername ? goTo(0) : goTo(1); }}
-          onSuccess={(d, password) => {
-            setData(d);
-            saveSettings(serverUrl, d.username || savedUsername, password);
-            goTo(3);
-          }}
-          serverUrl={serverUrl}
-          savedUsername={savedUsername}
-          savedPassword={savedPassword}
-        />
-      );
-      case 3: return (
-        <SuccessScreen serverUrl={serverUrl} userData={userData} onContinue={() => goTo(4)} />
-      );
-      case 4: return (
-        <HomeScreen serverUrl={serverUrl} userData={userData}
-          onLogout={() => { clearSettings(); setData(null); setSaved(''); setSavedPass(''); goTo(0); }} />
-      );
-      default: return null;
-    }
-  }
+  const handleLogin = (srv: string, user: string, pass: string) => {
+    setServerUrl(srv); setUsername(user); setPassword(pass);
+    saveSettings(srv, user, pass);
+    setPhase('app');
+  };
+
+  const handleLogout = () => {
+    clearSettings(); setUsername(''); setPassword('');
+    setPhase('login');
+  };
 
   return (
     <View style={styles.root} onLayout={onLayoutRootView}>
       <StatusBar style="light" backgroundColor={C.bg} translucent={false} />
       <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
-        <Animated.View style={[styles.slide, { transform: [{ translateX: slideAnim }] }]} key={step}>
-          {renderScreen()}
-        </Animated.View>
+        {phase === 'login' ? (
+          <LoginScreen
+            onSuccess={handleLogin}
+            savedServerUrl={serverUrl}
+            savedUsername={username}
+            savedPassword={password}
+          />
+        ) : (
+          <HomeScreen
+            serverUrl={serverUrl}
+            userData={{ username }}
+            onLogout={handleLogout}
+          />
+        )}
       </SafeAreaView>
 
       {updateInfo && (
@@ -163,5 +112,4 @@ export default function App() {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: C.bg },
   safe: { flex: 1, backgroundColor: C.bg },
-  slide: { flex: 1 },
 });
