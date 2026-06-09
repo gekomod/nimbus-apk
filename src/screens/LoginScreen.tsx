@@ -1,4 +1,4 @@
-// LoginScreen — sheet variant with biometric & 2FA
+// LoginScreen — sheet variant with biometric & 2FA, real API login
 import React, { useRef, useState } from 'react';
 import {
   Animated, Easing, KeyboardAvoidingView, Modal, Platform,
@@ -6,6 +6,7 @@ import {
 } from 'react-native';
 import { C, FONTS } from '../tokens';
 import { NbIcon, PrimaryBtn, Toggle } from '../components/ui';
+import { apiLogin } from '../api';
 
 // ── NimbusLogo ───────────────────────────────────────────────────────────────
 function NimbusLogo({ size = 58 }: { size?: number }) {
@@ -22,7 +23,7 @@ function NimbusLogo({ size = 58 }: { size?: number }) {
 }
 
 // ── Field ────────────────────────────────────────────────────────────────────
-function Field({ icon, label, value, onChange, secureTextEntry, trailing, mono, autoFocus }: any) {
+function Field({ icon, label, value, onChange, secureTextEntry, trailing, mono }: any) {
   const [focus, setFocus] = useState(false);
   return (
     <View style={{ marginBottom: 14 }}>
@@ -33,7 +34,6 @@ function Field({ icon, label, value, onChange, secureTextEntry, trailing, mono, 
           value={value}
           onChangeText={onChange}
           secureTextEntry={secureTextEntry}
-          autoFocus={autoFocus}
           autoCapitalize="none"
           autoCorrect={false}
           onFocus={() => setFocus(true)}
@@ -81,7 +81,6 @@ function CodeInput({ value, onChange, error }: any) {
 function BiometricSheet({ onClose, onSuccess }: any) {
   const [done, setDone] = useState(false);
   const pulse = useRef(new Animated.Value(1)).current;
-
   React.useEffect(() => {
     const loop = Animated.loop(Animated.sequence([
       Animated.timing(pulse, { toValue: 1.06, duration: 550, useNativeDriver: true, easing: Easing.inOut(Easing.ease) }),
@@ -92,7 +91,6 @@ function BiometricSheet({ onClose, onSuccess }: any) {
     const b = setTimeout(() => onSuccess(), 2100);
     return () => { clearTimeout(a); clearTimeout(b); loop.stop(); };
   }, []);
-
   return (
     <Modal transparent animationType="fade" onRequestClose={onClose}>
       <TouchableOpacity style={styles.bioOverlay} activeOpacity={1} onPress={onClose}>
@@ -116,7 +114,7 @@ function BiometricSheet({ onClose, onSuccess }: any) {
 
 // ── Main LoginScreen ──────────────────────────────────────────────────────────
 export interface LoginScreenProps {
-  onSuccess: (serverUrl: string, username: string, password: string) => void;
+  onSuccess: (serverUrl: string, username: string, password: string, token: string) => void;
   savedServerUrl?: string;
   savedUsername?: string;
   savedPassword?: string;
@@ -125,19 +123,46 @@ export interface LoginScreenProps {
 export default function LoginScreen({ onSuccess, savedServerUrl, savedUsername, savedPassword }: LoginScreenProps) {
   const [stage, setStage] = useState<'form' | '2fa'>('form');
   const [addr, setAddr] = useState(savedServerUrl || '192.168.1.10');
-  const [user, setUser] = useState(savedUsername || 'admin');
+  const [user, setUser] = useState(savedUsername || '');
   const [pass, setPass] = useState(savedPassword || '');
   const [show, setShow] = useState(false);
   const [remember, setRemember] = useState(true);
   const [loading, setLoading] = useState(false);
+  const [errMsg, setErrMsg] = useState('');
   const [bio, setBio] = useState(false);
   const [code, setCode] = useState('');
   const [codeErr, setCodeErr] = useState(false);
   const [done, setDone] = useState(false);
+  const pendingToken = useRef('');
 
-  const submit = () => {
+  const buildBase = () => {
+    const a = addr.trim();
+    return a.startsWith('http') ? a.replace(/\/+$/, '') : 'http://' + a.replace(/\/+$/, '');
+  };
+
+  const submit = async () => {
+    setErrMsg('');
     setLoading(true);
-    setTimeout(() => { setLoading(false); setStage('2fa'); }, 950);
+    try {
+      const base = buildBase();
+      const { initApi } = await import('../api');
+      initApi(base, '');
+      const data = await apiLogin(user, pass);
+      const tok = data.token ?? '';
+      pendingToken.current = tok;
+      // If backend returns a token and potentially requires 2FA, go to 2FA
+      // Otherwise login directly
+      if (data.requires2fa || data.twoFactor) {
+        setLoading(false);
+        setStage('2fa');
+      } else {
+        setDone(true);
+        setTimeout(() => onSuccess(base, user, pass, tok), 600);
+      }
+    } catch (e: any) {
+      setErrMsg(e?.message ?? 'Błąd logowania');
+      setLoading(false);
+    }
   };
 
   const verify = () => {
@@ -145,19 +170,13 @@ export default function LoginScreen({ onSuccess, savedServerUrl, savedUsername, 
     setLoading(true);
     setTimeout(() => {
       setLoading(false); setDone(true);
-      setTimeout(() => {
-        const base = addr.startsWith('http') ? addr : 'http://' + addr;
-        onSuccess(base.replace(/\/+$/, ''), user, pass);
-      }, 600);
+      setTimeout(() => onSuccess(buildBase(), user, pass, pendingToken.current), 600);
     }, 850);
   };
 
   const finishBio = () => {
     setBio(false); setDone(true);
-    setTimeout(() => {
-      const base = addr.startsWith('http') ? addr : 'http://' + addr;
-      onSuccess(base.replace(/\/+$/, ''), user, pass);
-    }, 500);
+    setTimeout(() => onSuccess(buildBase(), user, pass, pendingToken.current), 500);
   };
 
   const passEye = (
@@ -166,6 +185,7 @@ export default function LoginScreen({ onSuccess, savedServerUrl, savedUsername, 
     </TouchableOpacity>
   );
 
+  // ── 2FA stage ───────────────────────────────────────────────────────────────
   if (stage === '2fa') {
     return (
       <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
@@ -175,7 +195,6 @@ export default function LoginScreen({ onSuccess, savedServerUrl, savedUsername, 
               borderWidth: 1, borderColor: C.border, alignItems: 'center', justifyContent: 'center' }}>
             <NbIcon name="arrow_left" size={20} />
           </TouchableOpacity>
-
           <View style={{ flex: 1, justifyContent: 'center', paddingTop: 40 }}>
             <View style={{ width: 60, height: 60, borderRadius: 17, backgroundColor: C.accentDim,
               alignItems: 'center', justifyContent: 'center', marginBottom: 22 }}>
@@ -198,22 +217,29 @@ export default function LoginScreen({ onSuccess, savedServerUrl, savedUsername, 
     );
   }
 
+  // ── Sheet form ──────────────────────────────────────────────────────────────
   return (
     <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      {/* Hero area */}
       <View style={styles.hero}>
         <NimbusLogo size={58} />
         <Text style={styles.heroTitle}>Witaj ponownie</Text>
         <Text style={styles.heroSub}>Nimbus · Bezpieczny panel NAS</Text>
       </View>
 
-      {/* Form sheet */}
       <ScrollView style={styles.sheet} contentContainerStyle={styles.sheetContent} keyboardShouldPersistTaps="handled">
-        <Field icon="server" label="Adres serwera" value={addr} onChange={setAddr} mono
+        <Field icon="server" label="Adres serwera" value={addr} onChange={(v: string) => { setAddr(v); setErrMsg(''); }} mono
           trailing={<View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: C.ok }} />} />
-        <Field icon="user" label="Nazwa użytkownika" value={user} onChange={setUser} />
-        <Field icon="lock" label="Hasło" value={pass} onChange={setPass}
+        <Field icon="user" label="Nazwa użytkownika" value={user} onChange={(v: string) => { setUser(v); setErrMsg(''); }} />
+        <Field icon="lock" label="Hasło" value={pass} onChange={(v: string) => { setPass(v); setErrMsg(''); }}
           secureTextEntry={!show} trailing={passEye} />
+
+        {errMsg ? (
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: C.dangerDim,
+            borderRadius: 10, padding: 12, marginBottom: 14, borderWidth: 1, borderColor: C.danger }}>
+            <NbIcon name="alert" size={16} color={C.danger} />
+            <Text style={{ fontFamily: FONTS.regular, fontSize: 13, color: C.danger, flex: 1 }}>{errMsg}</Text>
+          </View>
+        ) : null}
 
         <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 22, marginTop: 4 }}>
           <Text style={{ fontFamily: FONTS.medium, fontSize: 14, color: C.textDim }}>Zapamiętaj tę sesję</Text>
@@ -266,8 +292,7 @@ const styles = StyleSheet.create({
   codeBox: {
     width: 46, height: 58, textAlign: 'center',
     fontFamily: FONTS.monobold, fontSize: 24, color: C.text,
-    backgroundColor: C.surface2, borderRadius: 13,
-    borderWidth: 1.5,
+    backgroundColor: C.surface2, borderRadius: 13, borderWidth: 1.5,
   },
   h1: { fontFamily: FONTS.extrabold, fontSize: 27, color: C.text, marginBottom: 8, letterSpacing: -0.5 },
   sub: { fontFamily: FONTS.regular, fontSize: 15, color: C.textDim, marginBottom: 30, lineHeight: 22 },

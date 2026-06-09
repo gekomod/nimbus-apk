@@ -18,6 +18,7 @@ import HomeScreen from './src/screens/HomeScreen';
 import UpdateModal from './src/components/UpdateModal';
 import { loadSettings, saveSettings, clearSettings } from './src/storage';
 import { checkForUpdate, UpdateInfo } from './src/checkUpdate';
+import { initApi } from './src/api';
 import { C } from './src/tokens';
 
 SplashScreen.preventAutoHideAsync();
@@ -27,6 +28,7 @@ function AppInner() {
   const [serverUrl, setServerUrl] = useState('http://192.168.1.10');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [apiToken, setApiToken] = useState('');
   const [settingsLoaded, setLoaded] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
 
@@ -45,8 +47,24 @@ function AppInner() {
       if (url) setServerUrl(url);
       if (u) setUsername(u);
       if (p) setPassword(p);
-      if (url && u && p) setPhase('app');
-      setLoaded(true);
+      if (url && u && p) {
+        // Auto-login
+        import('./src/api').then(({ apiLogin, initApi }) => {
+          const base = url.startsWith('http') ? url : 'http://' + url;
+          apiLogin(u, p)
+            .then(data => {
+              const tok = data.token ?? '';
+              initApi(base, tok);
+              setApiToken(tok);
+              setServerUrl(base);
+              setPhase('app');
+            })
+            .catch(() => { /* show login */ })
+            .finally(() => setLoaded(true));
+        });
+      } else {
+        setLoaded(true);
+      }
     });
   }, []);
 
@@ -61,14 +79,15 @@ function AppInner() {
 
   if (!fontsLoaded || !settingsLoaded) return null;
 
-  const handleLogin = (srv: string, user: string, pass: string) => {
-    setServerUrl(srv); setUsername(user); setPassword(pass);
+  const handleLogin = (srv: string, user: string, pass: string, token: string) => {
+    setServerUrl(srv); setUsername(user); setPassword(pass); setApiToken(token);
+    initApi(srv, token);
     saveSettings(srv, user, pass);
     setPhase('app');
   };
 
   const handleLogout = () => {
-    clearSettings(); setUsername(''); setPassword('');
+    clearSettings(); setUsername(''); setPassword(''); setApiToken('');
     setPhase('login');
   };
 
@@ -86,7 +105,8 @@ function AppInner() {
         ) : (
           <HomeScreen
             serverUrl={serverUrl}
-            userData={{ username }}
+            username={username}
+            apiToken={apiToken}
             onLogout={handleLogout}
           />
         )}
