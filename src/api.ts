@@ -123,21 +123,46 @@ export async function apiOverview(): Promise<any> {
 export interface Pool {
   name: string;
   status: string;
+  health: string;
   usedPct: number;
-  used: number;
-  total: number;
+  used: string;
+  avail: string;
+  total: string;
   raid: string;
   smart?: string;
+  iops?: number;
+  read_mbps?: number;
+  write_mbps?: number;
 }
 
 export interface Disk {
   dev: string;
   model: string;
+  serial?: string;
+  vendor?: string;
   temp: number;
   smart: string;
   hours?: string;
   size?: string;
   io?: number;
+  read_mbps?: number;
+  write_mbps?: number;
+  iops?: number;
+  pool?: string;
+  fs?: string;
+  mount?: string;
+}
+
+/** Parse a ZFS size string like "568G", "3.63T", "128K" etc. to bytes (number) */
+function parseSizeToBytes(s: string | number | undefined | null): number {
+  if (s == null) return 0;
+  if (typeof s === 'number') return s;
+  const str = String(s).trim();
+  const num = parseFloat(str);
+  if (isNaN(num)) return 0;
+  const unit = str.replace(/[0-9.]/g, '').toUpperCase();
+  const mult: Record<string, number> = { K: 1024, M: 1024**2, G: 1024**3, T: 1024**4, P: 1024**5 };
+  return num * (mult[unit] ?? 1);
 }
 
 export async function apiPools(): Promise<Pool[]> {
@@ -146,16 +171,24 @@ export async function apiPools(): Promise<Pool[]> {
   // Each pool: { name, health, used, avail, total, type, iops, read_mbps, write_mbps }
   const arr = data.pools ?? (Array.isArray(data) ? data : []);
   return arr.map((p: any) => {
-    const used  = p.used  ?? p.usedBytes ?? 0;
-    const total = p.total ?? p.size ?? (used + (p.avail ?? 0));
+    const usedStr  = String(p.used  ?? p.usedBytes ?? '0');
+    const totalStr = String(p.total ?? p.size ?? '0');
+    const usedBytes  = parseSizeToBytes(usedStr);
+    const totalBytes = parseSizeToBytes(totalStr);
+    const healthRaw = (p.health ?? p.status ?? p.state ?? 'unknown');
     return {
-      name:    p.name ?? '—',
-      status:  (p.health ?? p.status ?? p.state ?? 'unknown').toLowerCase(),
-      usedPct: total > 0 ? Math.round((used / total) * 100) : (p.usedPct ?? p.used_pct ?? 0),
-      used,
-      total,
-      raid:    p.type ?? p.raid ?? p.vdev ?? '—',
-      smart:   p.smart ?? 'unknown',
+      name:       p.name ?? '—',
+      status:     healthRaw.toLowerCase(),
+      health:     healthRaw.toUpperCase(),
+      usedPct:    totalBytes > 0 ? Math.round((usedBytes / totalBytes) * 100) : (p.usedPct ?? p.used_pct ?? 0),
+      used:       usedStr,
+      avail:      String(p.avail ?? '—'),
+      total:      totalStr,
+      raid:       p.type ?? p.raid ?? p.vdev ?? '—',
+      smart:      p.smart ?? undefined,
+      iops:       p.iops ?? undefined,
+      read_mbps:  p.read_mbps ?? undefined,
+      write_mbps: p.write_mbps ?? undefined,
     };
   });
 }
@@ -163,19 +196,27 @@ export async function apiPools(): Promise<Pool[]> {
 export async function apiDisks(): Promise<Disk[]> {
   // Response: { devices: [...] }
   // Each device: { bay, type, model, serial, vendor, size, fs, mount,
-  //                temp, hours, smart, io, read_mbps, write_mbps, iops }
+  //                temp, hours, smart, io, read_mbps, write_mbps, iops, pool }
   const data = await req<any>('/api/storage/devices');
   const arr = data.devices ?? (Array.isArray(data) ? data : []);
   return arr
-    .filter((d: any) => d.type === 'disk' || !d.type)
+    .filter((d: any) => d.type === 'disk')
     .map((d: any) => ({
-      dev:   d.bay ?? d.name ?? d.dev ?? d.device ?? '—',
-      model: d.model ?? d.vendor ?? '—',
-      temp:  d.temp ?? d.temperature ?? 0,
-      smart: d.smart ?? d.health ?? 'unknown',
-      hours: d.hours != null ? String(d.hours) : undefined,
-      size:  d.size ?? undefined,
-      io:    d.io ?? d.util ?? 0,
+      dev:        d.bay ?? d.name ?? d.dev ?? d.device ?? '—',
+      model:      d.model ?? d.vendor ?? '—',
+      serial:     d.serial ?? undefined,
+      vendor:     d.vendor ?? undefined,
+      temp:       d.temp ?? d.temperature ?? 0,
+      smart:      d.smart ?? d.health ?? 'unknown',
+      hours:      d.hours != null ? String(d.hours) : undefined,
+      size:       d.size ?? undefined,
+      io:         d.io ?? d.util ?? 0,
+      read_mbps:  d.read_mbps ?? undefined,
+      write_mbps: d.write_mbps ?? undefined,
+      iops:       d.iops ?? undefined,
+      pool:       d.pool ?? undefined,
+      fs:         d.fs ?? undefined,
+      mount:      d.mount ?? undefined,
     }));
 }
 
@@ -222,22 +263,43 @@ export interface NetInterface {
   up: boolean;
   rx?: number;
   tx?: number;
+  rx_mbps?: number;
+  tx_mbps?: number;
 }
 
 export async function apiNetwork(): Promise<{ interfaces: NetInterface[]; vpn?: any; firewall?: any }> {
-  const data = await req<any>('/api/network');
-  const ifaces = Array.isArray(data) ? data : (data.interfaces ?? data.data ?? []);
+  // Network data lives under /api/dashboard -> data.network array
+  // Fallback to /api/network if it exists
+  let ifaces: any[] = [];
+  let vpn: any = null;
+  let firewall: any = null;
+  try {
+    const dashData = await req<any>('/api/dashboard');
+    const netArr: any[] = Array.isArray(dashData.network) ? dashData.network : [];
+    ifaces = netArr;
+    vpn = dashData.vpn ?? dashData.wireguard ?? null;
+    firewall = dashData.firewall ?? dashData.ufw ?? null;
+  } catch {
+    try {
+      const data = await req<any>('/api/network');
+      ifaces = Array.isArray(data) ? data : (data.interfaces ?? data.data ?? []);
+      vpn = data.vpn ?? data.wireguard ?? null;
+      firewall = data.firewall ?? data.ufw ?? null;
+    } catch {}
+  }
   return {
     interfaces: ifaces.map((i: any) => ({
-      name:  i.name ?? i.interface ?? '—',
-      ip:    i.ip ?? i.address ?? i.addr ?? '—',
-      speed: i.speed ?? '—',
-      up:    i.up != null ? i.up : i.state === 'up',
-      rx:    i.rx ?? i.rx_bytes ?? undefined,
-      tx:    i.tx ?? i.tx_bytes ?? undefined,
+      name:     i.name ?? i.interface ?? '—',
+      ip:       i.ip ?? i.address ?? i.addr ?? '—',
+      speed:    i.speed ? String(i.speed) : '—',
+      up:       i.up != null ? Boolean(i.up) : (i.state === 'up'),
+      rx:       i.rx ?? i.rx_bytes ?? undefined,
+      tx:       i.tx ?? i.tx_bytes ?? undefined,
+      rx_mbps:  i.rx_mbps ?? undefined,
+      tx_mbps:  i.tx_mbps ?? undefined,
     })),
-    vpn:      data.vpn ?? data.wireguard ?? null,
-    firewall: data.firewall ?? data.ufw ?? null,
+    vpn,
+    firewall,
   };
 }
 
@@ -366,11 +428,13 @@ export async function apiUsers(): Promise<User[]> {
 
 // ── Media ─────────────────────────────────────────────────────────────────────
 export interface MediaService {
+  id: string;
   name: string;
   kind: string;
   status: string;
   streams: number;
   lib: string;
+  version?: string;
 }
 
 export async function apiMedia(): Promise<MediaService[]> {
@@ -379,21 +443,32 @@ export async function apiMedia(): Promise<MediaService[]> {
   const data = await req<any>('/api/media/status/all');
   if (Array.isArray(data)) {
     return data.map((m: any) => ({
+      id:      m.id ?? m.name ?? '—',
       name:    m.name ?? m.id ?? '—',
       kind:    m.kind ?? m.type ?? 'film',
       status:  m.active ? 'running' : 'stopped',
       streams: m.active_streams ?? m.streams ?? 0,
       lib:     m.lib ?? m.library ?? '—',
+      version: m.version ?? undefined,
     }));
   }
   // map form
   return Object.entries(data).map(([id, m]: [string, any]) => ({
+    id,
     name:    m.name ?? id,
     kind:    id === 'navidrome' ? 'music' : 'film',
     status:  m.active ? 'running' : 'stopped',
     streams: m.active_streams ?? 0,
     lib:     m.libraries?.map((l: any) => l.name).join(', ') ?? '—',
+    version: m.version ?? undefined,
   }));
+}
+
+export async function apiMediaAction(id: string, action: 'start' | 'stop'): Promise<void> {
+  await fetch(`${_base}/api/media/${encodeURIComponent(id)}/${action}`, {
+    method: 'POST',
+    credentials: 'include',
+  });
 }
 
 // ── ClamAV / Antivirus ────────────────────────────────────────────────────────
@@ -426,6 +501,19 @@ export async function apiClamavScan(): Promise<void> {
   });
 }
 
+export async function apiClamavRealtimeStatus(): Promise<{ active: boolean }> {
+  return req('/api/antivirus/realtime');
+}
+
+export async function apiClamavRealtimeToggle(enable: boolean): Promise<void> {
+  await fetch(`${_base}/api/antivirus/realtime`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enable }),
+  });
+}
+
 // ── UPS ───────────────────────────────────────────────────────────────────────
 export interface UpsStatus {
   battery: number;
@@ -453,6 +541,18 @@ export async function apiUps(): Promise<UpsStatus> {
     load:    s.ups_load      ?? s.load    ?? 0,
     model:   data.config?.ups_name ?? s.ups_name ?? data.model ?? '—',
   };
+}
+
+// ── Terminal / Exec ───────────────────────────────────────────────────────────
+export async function apiExec(command: string): Promise<{ output: string; ok: boolean }> {
+  const res = await fetch(`${_base}/api/storage/exec`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ command }),
+  });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
 }
 
 // ── Alerts / Notifications ────────────────────────────────────────────────────
