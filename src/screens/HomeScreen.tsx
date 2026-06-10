@@ -6,7 +6,7 @@ import {
   TextInput, TouchableOpacity, View,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { C, FONTS } from '../tokens';
+import { C, FONTS, applyAccent, setLang, getLang, t } from '../tokens';
 import {
   Bar, Card, Dot, ModuleHeader, NbIcon, Pill, Ring,
   Row, SectionTitle, Spark, Spinner, Toggle,
@@ -375,13 +375,15 @@ function StorageScreen({ go }: any) {
                       <View style={{ flex: 1 }}>
                         <Text style={{ fontFamily: FONTS.monobold, fontSize: 14, color: C.text }}>{d.dev}</Text>
                         <Text style={{ fontFamily: FONTS.regular, fontSize: 13, color: C.textDim, marginTop: 2 }}>{d.model}</Text>
-                        {d.size && (
+                        {d.size && d.size !== '0' && (
                           <Text style={{ fontFamily: FONTS.mono, fontSize: 12, color: C.textFaint, marginTop: 2 }}>{d.size}</Text>
                         )}
                       </View>
                       <Pill tone={st}>
                         <Text style={{ fontFamily: FONTS.monobold, fontSize: 11, color: sc }}>
-                          SMART: {(d.smart ?? 'unknown').toUpperCase()}
+                          {d.smart === 'passed' ? '✓ SMART OK'
+                            : d.smart === 'warn' ? '⚠ SMART WARN'
+                            : 'SMART N/A'}
                         </Text>
                       </Pill>
                     </View>
@@ -773,33 +775,54 @@ function AntivirusScreen({ go }: any) {
 // ── UPS ───────────────────────────────────────────────────────────────────────
 function UpsScreen({ go }: any) {
   const { data, loading, error, refresh } = useApi(apiUps, null);
+  const online = data?.mode === 'online' || data?.mode === 'OL' || (data?.mode ?? '').includes('OL');
+  const battColor = (data?.battery ?? 0) < 20 ? C.danger : (data?.battery ?? 0) < 50 ? C.warn : C.ok;
   return (
     <ScrollView contentContainerStyle={{ paddingBottom: 24 }}
       refreshControl={<RefreshControl refreshing={loading} onRefresh={refresh} tintColor={C.accent} />}>
-      <ModuleHeader title="Zasilanie (UPS)" onBack={() => go('__back')} />
+      <ModuleHeader title={t('Zasilanie (UPS)')} onBack={() => go('__back')} />
       <View style={{ paddingHorizontal: 16 }}>
-        {loading ? <LoadBox /> : error ? <ErrBox msg={error} onRetry={refresh} /> : data && (
+        {loading ? <LoadBox /> : error ? (
+          <Card pad={24} style={{ alignItems: 'center', gap: 12 }}>
+            <NbIcon name="battery" size={48} color={C.textFaint} />
+            <Text style={{ fontFamily: FONTS.bold, fontSize: 16, color: C.textDim }}>{t('Brak połączenia z UPS')}</Text>
+            <Text style={{ fontFamily: FONTS.regular, fontSize: 13, color: C.textFaint, textAlign: 'center' }}>{error}</Text>
+            <TouchableOpacity onPress={refresh} style={{ paddingHorizontal: 20, paddingVertical: 10, borderRadius: 10, backgroundColor: C.accentDim }}>
+              <Text style={{ fontFamily: FONTS.semibold, fontSize: 14, color: C.accent }}>{t('Spróbuj ponownie')}</Text>
+            </TouchableOpacity>
+          </Card>
+        ) : !data ? (
+          <Card pad={24} style={{ alignItems: 'center', gap: 12 }}>
+            <NbIcon name="battery" size={48} color={C.textFaint} />
+            <Text style={{ fontFamily: FONTS.bold, fontSize: 16, color: C.textDim }}>{t('Brak połączenia z UPS')}</Text>
+          </Card>
+        ) : (
           <>
             <Card pad={18}>
               <View style={{ alignItems: 'center', paddingVertical: 8 }}>
-                <Ring value={data.battery} size={110} sw={11} color={C.ok} label={`${data.battery}%`} sub="bateria" />
-                <Text style={{ fontFamily: FONTS.bold, fontSize: 16, color: C.text, marginTop: 16 }}>{data.model}</Text>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 6 }}>
-                  <Dot tone={data.mode === 'on_line' || data.mode === 'online' ? 'ok' : 'warn'} />
-                  <Text style={{ fontFamily: FONTS.regular, fontSize: 14, color: C.textDim }}>{data.mode}</Text>
+                <Ring value={data.battery} size={120} sw={12} color={battColor} label={`${data.battery}%`} sub="bateria" />
+                <Text style={{ fontFamily: FONTS.bold, fontSize: 17, color: C.text, marginTop: 18 }}>{data.model}</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, marginTop: 8,
+                  paddingHorizontal: 14, paddingVertical: 6, borderRadius: 99,
+                  backgroundColor: online ? C.okDim : C.warnDim }}>
+                  <Dot tone={online ? 'ok' : 'warn'} />
+                  <Text style={{ fontFamily: FONTS.monobold, fontSize: 12, color: online ? C.ok : C.warn, letterSpacing: 0.5 }}>
+                    {online ? 'ONLINE' : data.mode.toUpperCase()}
+                  </Text>
                 </View>
               </View>
             </Card>
             <View style={{ height: 14 }} />
             <View style={{ flexDirection: 'row', gap: 12 }}>
               {[
-                { label: 'Podtrzymanie', val: data.runtime },
-                { label: 'Napięcie', val: `${data.voltage} V` },
-                { label: 'Obciążenie', val: `${data.load}%` },
+                { label: t('Podtrzymanie'), val: data.runtime,          icon: 'clock'       },
+                { label: t('Napięcie'),     val: `${data.voltage} V`,   icon: 'zap'         },
+                { label: t('Obciążenie'),   val: `${data.load}%`,       icon: 'activity'    },
               ].map(item => (
-                <Card key={item.label} pad={14} style={{ flex: 1, alignItems: 'center' }}>
-                  <Text style={{ fontFamily: FONTS.monobold, fontSize: 16, color: C.text }}>{item.val}</Text>
-                  <Text style={{ fontFamily: FONTS.regular, fontSize: 11, color: C.textDim, marginTop: 3, textAlign: 'center' }}>{item.label}</Text>
+                <Card key={item.label} pad={14} style={{ flex: 1, alignItems: 'center', gap: 6 }}>
+                  <NbIcon name={item.icon as any} size={20} color={C.accent} />
+                  <Text style={{ fontFamily: FONTS.monobold, fontSize: 18, color: C.text }}>{item.val}</Text>
+                  <Text style={{ fontFamily: FONTS.regular, fontSize: 11, color: C.textDim, textAlign: 'center' }}>{item.label}</Text>
                 </Card>
               ))}
             </View>
@@ -826,13 +849,22 @@ function ProcessesScreen({ go }: any) {
       refreshControl={<RefreshControl refreshing={loading} onRefresh={refresh} tintColor={C.accent} />}>
       <ModuleHeader title="Procesy" onBack={() => go('__back')} />
       <View style={{ paddingHorizontal: 16 }}>
-        {loading && !procs.length ? <LoadBox /> : error ? <ErrBox msg={error} onRetry={refresh} /> : (
-          <Card pad={6}>
-            <View style={{ padding: 12, flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: C.border }}>
-              {['PID', 'Nazwa', 'CPU%', 'MEM%', ''].map((h, i) => (
-                <Text key={i} style={{ fontFamily: FONTS.monobold, fontSize: 11, color: C.textFaint,
-                  flex: i === 1 ? 2 : 1, textAlign: i > 1 ? 'right' : 'left' }}>{h}</Text>
-              ))}
+        {loading && !procs.length ? <LoadBox /> : error ? <ErrBox msg={error} onRetry={refresh} /> :
+        !procs.length ? (
+          <Card pad={24} style={{ alignItems: 'center', gap: 10 }}>
+            <NbIcon name="activity" size={36} color={C.textFaint} />
+            <Text style={{ fontFamily: FONTS.semibold, fontSize: 15, color: C.textDim }}>Brak procesów</Text>
+          </Card>
+        ) : (
+          <Card pad={0}>
+            <View style={{ paddingHorizontal: 14, paddingVertical: 10, flexDirection: 'row',
+              borderBottomWidth: 1, borderBottomColor: C.border, backgroundColor: C.surface2,
+              borderTopLeftRadius: 14, borderTopRightRadius: 14 }}>
+              <Text style={{ fontFamily: FONTS.monobold, fontSize: 11, color: C.textFaint, width: 44 }}>PID</Text>
+              <Text style={{ fontFamily: FONTS.monobold, fontSize: 11, color: C.textFaint, flex: 1 }}>Nazwa</Text>
+              <Text style={{ fontFamily: FONTS.monobold, fontSize: 11, color: C.textFaint, width: 52, textAlign: 'right' }}>CPU%</Text>
+              <Text style={{ fontFamily: FONTS.monobold, fontSize: 11, color: C.textFaint, width: 52, textAlign: 'right', marginLeft: 4 }}>MEM%</Text>
+              <View style={{ width: 31 }} />
             </View>
             {procs.map((p, i) => {
               const cpuVal = typeof p.cpu === 'number' ? p.cpu : parseFloat(p.cpu) || 0;
@@ -1051,109 +1083,105 @@ const ACCENT_PRESETS = [
   { label: 'Czerwony',  color: '#ff5d5d' },
 ];
 
-const LANGUAGE_OPTIONS = [
-  { label: 'Polski', value: 'pl' },
-  { label: 'English', value: 'en' },
-];
-
-function SettingsScreen({ go, onLogout, serverUrl, username }: any) {
+function SettingsScreen({ go, onLogout, serverUrl, username, onThemeChange }: any) {
   const { data: overview } = useApi(apiOverview, null);
-  const [lang, setLang] = useState<string>('pl');
-  const [accentColor, setAccentColor] = useState<string>(C.accent);
+  const [currentLang, setCurrentLang]   = useState<string>(getLang());
+  const [accentColor, setAccentColor]   = useState<string>(C.accent);
+  const [saved, setSaved]               = useState(false);
 
-  useEffect(() => {
-    // Load saved settings
-    (async () => {
-      try {
-        const saved = await AsyncStorage.getItem('nimbus_settings');
-        if (saved) {
-          const s = JSON.parse(saved);
-          if (s.lang) setLang(s.lang);
-          if (s.accentColor) setAccentColor(s.accentColor);
-        }
-      } catch {}
-    })();
-  }, []);
-
-  const save = async (newLang?: string, newAccent?: string) => {
-    const settings = {
-      lang: newLang ?? lang,
-      accentColor: newAccent ?? accentColor,
-    };
-    try { await AsyncStorage.setItem('nimbus_settings', JSON.stringify(settings)); } catch {}
+  const persist = async (newLang: string, newAccent: string) => {
+    try {
+      await AsyncStorage.setItem('nimbus_settings', JSON.stringify({ lang: newLang, accentColor: newAccent }));
+    } catch {}
   };
 
-  const setLanguage = (val: string) => { setLang(val); save(val, undefined); };
-  const setAccent = (val: string) => { setAccentColor(val); save(undefined, val); };
+  const changeLang = (val: string) => {
+    setLang(val as any);
+    setCurrentLang(val);
+    setSaved(false);
+  };
+
+  const changeAccent = (val: string) => {
+    applyAccent(val);
+    setAccentColor(val);
+    setSaved(false);
+  };
+
+  const applyAndSave = async () => {
+    await persist(currentLang, accentColor);
+    setSaved(true);
+    // Re-render the whole HomeScreen with new C values
+    if (onThemeChange) onThemeChange();
+  };
 
   return (
-    <ScrollView contentContainerStyle={{ paddingBottom: 24 }}>
-      <ModuleHeader title="Ustawienia" onBack={() => go('__back')} />
+    <ScrollView contentContainerStyle={{ paddingBottom: 40 }}>
+      <ModuleHeader title={t('Ustawienia')} onBack={() => go('__back')} />
       <View style={{ paddingHorizontal: 16 }}>
 
         {/* Server info */}
-        <SectionTitle>Serwer</SectionTitle>
+        <SectionTitle>{t('Serwer')}</SectionTitle>
         <Card pad={6}>
           <View style={{ paddingHorizontal: 12 }}>
-            <Row icon="server" iconTone="accent" title="Serwer" sub={serverUrl} />
+            <Row icon="server" iconTone="accent" title={t('Serwer')} sub={serverUrl} />
           </View>
           <View style={{ height: 1, backgroundColor: C.border }} />
           <View style={{ paddingHorizontal: 12 }}>
-            <Row icon="user" iconTone="accent" title="Konto" sub={username} />
+            <Row icon="user" iconTone="accent" title={t('Konto')} sub={username} />
           </View>
           {overview && (
             <>
               <View style={{ height: 1, backgroundColor: C.border }} />
               <View style={{ paddingHorizontal: 12 }}>
                 <Row icon="activity" iconTone="ok" title="System"
-                  sub={[overview.os, overview.kernel, overview.version].filter(Boolean).join(' · ')} />
+                  sub={[overview.os_name ?? overview.os, overview.kernel].filter(Boolean).join(' · ')} />
               </View>
             </>
           )}
         </Card>
 
-        {/* Interface */}
+        {/* Language */}
         <View style={{ height: 24 }} />
-        <SectionTitle>Interfejs</SectionTitle>
+        <SectionTitle>{t('Interfejs')}</SectionTitle>
         <Card pad={14}>
-          <Text style={{ fontFamily: FONTS.bold, fontSize: 13, color: C.textFaint, marginBottom: 10 }}>Język</Text>
+          <Text style={{ fontFamily: FONTS.bold, fontSize: 13, color: C.textFaint, marginBottom: 10 }}>{t('Język')}</Text>
           <View style={{ flexDirection: 'row', gap: 10 }}>
-            {LANGUAGE_OPTIONS.map(opt => (
-              <TouchableOpacity key={opt.value} onPress={() => setLanguage(opt.value)} activeOpacity={0.8}
-                style={{ flex: 1, paddingVertical: 10, borderRadius: 10, alignItems: 'center',
-                  backgroundColor: lang === opt.value ? C.accentDim : C.surface2,
-                  borderWidth: 1, borderColor: lang === opt.value ? C.accent : C.border }}>
-                <Text style={{ fontFamily: FONTS.semibold, fontSize: 14,
-                  color: lang === opt.value ? C.accent : C.textDim }}>{opt.label}</Text>
+            {[{ label: 'Polski', value: 'pl' }, { label: 'English', value: 'en' }].map(opt => (
+              <TouchableOpacity key={opt.value} onPress={() => changeLang(opt.value)} activeOpacity={0.8}
+                style={{ flex: 1, paddingVertical: 12, borderRadius: 12, alignItems: 'center',
+                  backgroundColor: currentLang === opt.value ? C.accentDim : C.surface2,
+                  borderWidth: 1.5, borderColor: currentLang === opt.value ? C.accent : C.border }}>
+                <Text style={{ fontFamily: FONTS.bold, fontSize: 15,
+                  color: currentLang === opt.value ? C.accent : C.textDim }}>{opt.label}</Text>
               </TouchableOpacity>
             ))}
           </View>
+
           <View style={{ height: 16 }} />
-          <Text style={{ fontFamily: FONTS.bold, fontSize: 13, color: C.textFaint, marginBottom: 10 }}>Motyw</Text>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8,
-            paddingHorizontal: 12, backgroundColor: C.surface2, borderRadius: 10, borderWidth: 1, borderColor: C.border }}>
+          <Text style={{ fontFamily: FONTS.bold, fontSize: 13, color: C.textFaint, marginBottom: 10 }}>{t('Motyw')}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 10,
+            paddingHorizontal: 12, backgroundColor: C.surface2, borderRadius: 12, borderWidth: 1, borderColor: C.border }}>
             <NbIcon name="eye" size={16} color={C.textDim} />
-            <Text style={{ fontFamily: FONTS.semibold, fontSize: 14, color: C.textDim, flex: 1 }}>Ciemny</Text>
-            <Pill tone="ok">
-              <Text style={{ fontFamily: FONTS.monobold, fontSize: 10, color: C.ok }}>AKTYWNY</Text>
-            </Pill>
+            <Text style={{ fontFamily: FONTS.semibold, fontSize: 14, color: C.textDim, flex: 1 }}>{t('Ciemny')}</Text>
+            <Pill tone="ok"><Text style={{ fontFamily: FONTS.monobold, fontSize: 10, color: C.ok }}>{t('AKTYWNY')}</Text></Pill>
           </View>
         </Card>
 
-        {/* Appearance */}
+        {/* Accent color */}
         <View style={{ height: 24 }} />
-        <SectionTitle>Wygląd</SectionTitle>
-        <Card pad={14}>
-          <Text style={{ fontFamily: FONTS.bold, fontSize: 13, color: C.textFaint, marginBottom: 12 }}>Kolor akcentu</Text>
-          <View style={{ flexDirection: 'row', gap: 12, flexWrap: 'wrap' }}>
+        <SectionTitle>{t('Kolor akcentu')}</SectionTitle>
+        <Card pad={16}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
             {ACCENT_PRESETS.map(preset => (
-              <TouchableOpacity key={preset.color} onPress={() => setAccent(preset.color)} activeOpacity={0.8}
+              <TouchableOpacity key={preset.color} onPress={() => changeAccent(preset.color)} activeOpacity={0.8}
                 style={{ alignItems: 'center', gap: 6 }}>
-                <View style={{ width: 44, height: 44, borderRadius: 12, backgroundColor: preset.color,
-                  borderWidth: accentColor === preset.color ? 3 : 1.5,
-                  borderColor: accentColor === preset.color ? C.text : 'transparent',
-                  alignItems: 'center', justifyContent: 'center' }}>
-                  {accentColor === preset.color && <NbIcon name="check" size={18} color="#fff" />}
+                <View style={{ width: 48, height: 48, borderRadius: 14, backgroundColor: preset.color,
+                  borderWidth: accentColor === preset.color ? 3 : 0,
+                  borderColor: C.text,
+                  alignItems: 'center', justifyContent: 'center',
+                  shadowColor: preset.color, shadowOpacity: accentColor === preset.color ? 0.6 : 0,
+                  shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: accentColor === preset.color ? 6 : 0 }}>
+                  {accentColor === preset.color && <NbIcon name="check" size={20} color="#fff" stroke={2.6} />}
                 </View>
                 <Text style={{ fontFamily: FONTS.regular, fontSize: 11, color: C.textFaint }}>{preset.label}</Text>
               </TouchableOpacity>
@@ -1161,13 +1189,26 @@ function SettingsScreen({ go, onLogout, serverUrl, username }: any) {
           </View>
         </Card>
 
+        {/* Apply button */}
         <View style={{ height: 24 }} />
+        <TouchableOpacity onPress={applyAndSave} activeOpacity={0.85}
+          style={{ height: 54, borderRadius: 14, alignItems: 'center', justifyContent: 'center',
+            flexDirection: 'row', gap: 10,
+            backgroundColor: saved ? C.okDim : C.accent,
+            borderWidth: saved ? 1 : 0, borderColor: C.ok }}>
+          <NbIcon name={saved ? 'check' : 'refresh'} size={20} color={saved ? C.ok : C.bg} stroke={2.5} />
+          <Text style={{ fontFamily: FONTS.bold, fontSize: 16, color: saved ? C.ok : C.bg }}>
+            {saved ? 'Zastosowano!' : 'Zastosuj zmiany'}
+          </Text>
+        </TouchableOpacity>
+
+        <View style={{ height: 14 }} />
         <TouchableOpacity onPress={onLogout} activeOpacity={0.8}
           style={{ height: 54, borderRadius: 14, backgroundColor: C.dangerDim,
             borderWidth: 1, borderColor: C.danger, alignItems: 'center', justifyContent: 'center',
             flexDirection: 'row', gap: 10 }}>
           <NbIcon name="logout" size={20} color={C.danger} />
-          <Text style={{ fontFamily: FONTS.bold, fontSize: 16, color: C.danger }}>Wyloguj się</Text>
+          <Text style={{ fontFamily: FONTS.bold, fontSize: 16, color: C.danger }}>{t('Wyloguj się')}</Text>
         </TouchableOpacity>
       </View>
     </ScrollView>
@@ -1252,9 +1293,10 @@ interface Props {
   username: string;
   apiToken: string;
   onLogout: () => void;
+  onThemeChange?: () => void;
 }
 
-export default function HomeScreen({ serverUrl, username, onLogout }: Props) {
+export default function HomeScreen({ serverUrl, username, onLogout, onThemeChange }: Props) {
   const [tab, setTab] = useState('dashboard');
   const [stack, setStack] = useState<string | null>(null);
 
@@ -1290,7 +1332,7 @@ export default function HomeScreen({ serverUrl, username, onLogout }: Props) {
     users:         <UsersScreen go={go} />,
     notifications: <NotificationsScreen go={go} />,
     terminal:      <TerminalScreen go={go} />,
-    settings:      <SettingsScreen go={go} onLogout={() => go('__logout')} serverUrl={serverUrl} username={username} />,
+    settings:      <SettingsScreen go={go} onLogout={() => go('__logout')} serverUrl={serverUrl} username={username} onThemeChange={onThemeChange} />,
   };
 
   return (
