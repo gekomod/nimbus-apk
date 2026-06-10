@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import Constants from 'expo-constants';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { useFonts } from 'expo-font';
@@ -19,18 +20,20 @@ import UpdateModal from './src/components/UpdateModal';
 import { loadSettings, saveSettings, clearSettings } from './src/storage';
 import { checkForUpdate, UpdateInfo } from './src/checkUpdate';
 import { initApi, apiCheckAuth } from './src/api';
-import { C } from './src/tokens';
+import { C, applyAccent, setLang } from './src/tokens';
 
 SplashScreen.preventAutoHideAsync();
 
 function AppInner() {
-  const [phase, setPhase] = useState<'login' | 'app'>('login');
+  const [phase, setPhase]     = useState<'login' | 'app'>('login');
   const [serverUrl, setServerUrl] = useState('http://192.168.1.10');
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [apiToken, setApiToken] = useState('');
+  const [username, setUsername]   = useState('');
+  const [password, setPassword]   = useState('');
+  const [apiToken, setApiToken]   = useState('');
   const [settingsLoaded, setLoaded] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+  // themeKey forces a full re-render of HomeScreen when theme changes
+  const [themeKey, setThemeKey] = useState(0);
 
   const [fontsLoaded] = useFonts({
     HankenGrotesk_400Regular,
@@ -43,12 +46,23 @@ function AppInner() {
   });
 
   useEffect(() => {
-    loadSettings().then(({ serverUrl: url, username: u, password: p }) => {
+    (async () => {
+      // Load app settings (accent color, language) before first render
+      try {
+        const saved = await AsyncStorage.getItem('nimbus_settings');
+        if (saved) {
+          const s = JSON.parse(saved);
+          if (s.accentColor) applyAccent(s.accentColor);
+          if (s.lang) setLang(s.lang as any);
+        }
+      } catch {}
+
+      // Load server/auth settings
+      const { serverUrl: url, username: u, password: p } = await loadSettings();
       if (url) setServerUrl(url);
-      if (u) setUsername(u);
-      if (p) setPassword(p);
+      if (u)   setUsername(u);
+      if (p)   setPassword(p);
       if (url) {
-        // Try to resume existing cookie session
         const base = url.startsWith('http') ? url : 'http://' + url;
         initApi(base);
         apiCheckAuth()
@@ -59,12 +73,12 @@ function AppInner() {
               setPhase('app');
             }
           })
-          .catch(() => { /* session expired — show login */ })
+          .catch(() => {})
           .finally(() => setLoaded(true));
       } else {
         setLoaded(true);
       }
-    });
+    })();
   }, []);
 
   useEffect(() => {
@@ -90,6 +104,9 @@ function AppInner() {
     setPhase('login');
   };
 
+  // Called from SettingsScreen after theme changes — forces re-render with new C values
+  const handleThemeChange = () => setThemeKey(k => k + 1);
+
   return (
     <View style={styles.root} onLayout={onLayoutRootView}>
       <StatusBar style="light" backgroundColor={C.bg} translucent={false} />
@@ -103,10 +120,12 @@ function AppInner() {
           />
         ) : (
           <HomeScreen
+            key={themeKey}
             serverUrl={serverUrl}
             username={username}
             apiToken={apiToken}
             onLogout={handleLogout}
+            onThemeChange={handleThemeChange}
           />
         )}
       </SafeAreaView>
