@@ -80,23 +80,38 @@ export interface DashboardData {
   version?: string;
 }
 
+function fmtUptime(secs: number): string {
+  if (!secs) return '—';
+  const d = Math.floor(secs / 86400);
+  const h = Math.floor((secs % 86400) / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h ${m}m`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
 export async function apiDashboard(): Promise<DashboardData> {
   const data = await req<any>('/api/dashboard');
-  // Dashboard returns combined object; extract overview fields
+  // /api/dashboard returns combined object; overview key has nested cpu/memory objects
+  // structure from handleOverview: { cpu: {percent, model, cores, temp, load}, memory: {total_gb, used_gb, avail_gb, percent}, uptime_secs, hostname, ... }
   const ov = data.overview ?? data;
+  const uptimeSecs = ov.uptime_secs ?? ov.uptime ?? 0;
+  // network from dashboard.network array — pick first non-loopback interface
+  const netArr: any[] = Array.isArray(data.network) ? data.network : [];
+  const netIf = netArr.find((n: any) => n.name && !n.name.startsWith('lo')) ?? netArr[0] ?? null;
   return {
-    cpu:      ov.cpu ?? ov.cpu_percent ?? 0,
-    ram:      ov.ram ?? ov.ram_percent ?? ov.memory_percent ?? 0,
-    ramUsed:  ov.ramUsed ?? ov.ram_used ?? ov.memory_used ?? 0,
-    ramTotal: ov.ramTotal ?? ov.ram_total ?? ov.memory_total ?? 0,
-    temp:     ov.temp ?? ov.temperature ?? ov.cpu_temp ?? 0,
-    uptime:   ov.uptime ?? '—',
-    load:     ov.load ?? ov.load_avg ?? [],
-    download: ov.download ?? ov.rx ?? 0,
-    upload:   ov.upload ?? ov.tx ?? 0,
+    cpu:      typeof ov.cpu === 'object' ? (ov.cpu?.percent ?? 0) : (ov.cpu ?? ov.cpu_percent ?? 0),
+    ram:      typeof ov.memory === 'object' ? (ov.memory?.percent ?? 0) : (ov.ram ?? ov.memory_percent ?? 0),
+    ramUsed:  typeof ov.memory === 'object' ? (ov.memory?.used_gb ?? 0) : (ov.ramUsed ?? ov.ram_used ?? 0),
+    ramTotal: typeof ov.memory === 'object' ? (ov.memory?.total_gb ?? 0) : (ov.ramTotal ?? ov.ram_total ?? 0),
+    temp:     typeof ov.cpu === 'object' ? (ov.cpu?.temp ?? 0) : (ov.temp ?? ov.cpu_temp ?? 0),
+    uptime:   typeof uptimeSecs === 'number' ? fmtUptime(uptimeSecs) : (uptimeSecs || '—'),
+    load:     typeof ov.cpu === 'object' ? (ov.cpu?.load ?? []) : (ov.load ?? ov.load_avg ?? []),
+    download: netIf?.rx_mbps ?? netIf?.rx ?? ov.download ?? ov.rx ?? 0,
+    upload:   netIf?.tx_mbps ?? netIf?.tx ?? ov.upload ?? ov.tx ?? 0,
     hostname: ov.hostname ?? '—',
-    os:       ov.os ?? ov.distro ?? '—',
-    version:  ov.version ?? '—',
+    os:       ov.os_name ?? ov.os ?? ov.distro ?? '—',
+    version:  ov.kernel ?? ov.version ?? '—',
   };
 }
 
