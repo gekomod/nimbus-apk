@@ -281,37 +281,61 @@ export interface NetInterface {
   tx_mbps?: number;
 }
 
+function normalizeIface(i: any): NetInterface {
+  const stateStr = String(i.state ?? i.operstate ?? i.flags ?? '').toUpperCase();
+  const upBool = i.up != null ? Boolean(i.up)
+    : stateStr.includes('UP') ? true
+    : stateStr.includes('DOWN') ? false
+    : true; // default visible = up
+
+  const ip = i.ip ?? i.address ?? i.addr ?? i.inet ?? i.ipv4 ?? '—';
+  const speed = i.speed != null ? `${i.speed} Mbps` : i.link_speed ?? '—';
+
+  return {
+    name:    i.name ?? i.interface ?? i.iface ?? '—',
+    ip:      ip === '' ? '—' : ip,
+    speed,
+    up:      upBool,
+    rx:      i.rx ?? i.rx_bytes ?? undefined,
+    tx:      i.tx ?? i.tx_bytes ?? undefined,
+    rx_mbps: i.rx_mbps ?? (i.rx_speed != null ? parseFloat(i.rx_speed) : undefined),
+    tx_mbps: i.tx_mbps ?? (i.tx_speed != null ? parseFloat(i.tx_speed) : undefined),
+  };
+}
+
 export async function apiNetwork(): Promise<{ interfaces: NetInterface[]; vpn?: any; firewall?: any }> {
-  // Network data lives under /api/dashboard -> data.network array
-  // Fallback to /api/network if it exists
   let ifaces: any[] = [];
   let vpn: any = null;
   let firewall: any = null;
+
+  // Try dedicated /api/network first (lighter endpoint)
   try {
-    const dashData = await req<any>('/api/dashboard');
-    const netArr: any[] = Array.isArray(dashData.network) ? dashData.network : [];
-    ifaces = netArr;
-    vpn = dashData.vpn ?? dashData.wireguard ?? null;
-    firewall = dashData.firewall ?? dashData.ufw ?? null;
-  } catch {
-    try {
-      const data = await req<any>('/api/network');
-      ifaces = Array.isArray(data) ? data : (data.interfaces ?? data.data ?? []);
+    const data = await req<any>('/api/network');
+    // May return array directly OR object with interfaces key
+    const arr = Array.isArray(data) ? data
+      : Array.isArray(data.interfaces) ? data.interfaces
+      : Array.isArray(data.data) ? data.data
+      : [];
+    if (arr.length > 0) {
+      ifaces = arr;
       vpn = data.vpn ?? data.wireguard ?? null;
       firewall = data.firewall ?? data.ufw ?? null;
+    }
+  } catch {}
+
+  // Fallback: pull from dashboard response
+  if (ifaces.length === 0) {
+    try {
+      const dash = await req<any>('/api/dashboard');
+      const netField = dash.network ?? dash.interfaces ?? [];
+      ifaces = Array.isArray(netField) ? netField : [];
+      vpn = dash.vpn ?? dash.wireguard ?? vpn;
+      firewall = dash.firewall ?? dash.ufw ?? firewall;
     } catch {}
   }
+
   return {
-    interfaces: ifaces.map((i: any) => ({
-      name:     i.name ?? i.interface ?? '—',
-      ip:       i.ip ?? i.address ?? i.addr ?? '—',
-      speed:    i.speed ? String(i.speed) : '—',
-      up:       i.up != null ? Boolean(i.up) : (i.state === 'up'),
-      rx:       i.rx ?? i.rx_bytes ?? undefined,
-      tx:       i.tx ?? i.tx_bytes ?? undefined,
-      rx_mbps:  i.rx_mbps ?? undefined,
-      tx_mbps:  i.tx_mbps ?? undefined,
-    })),
+    interfaces: ifaces.map(normalizeIface),
     vpn,
     firewall,
   };
