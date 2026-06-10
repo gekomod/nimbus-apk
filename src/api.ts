@@ -153,37 +153,51 @@ export interface Disk {
   mount?: string;
 }
 
-/** Parse a ZFS size string like "568G", "3.63T", "128K" etc. to bytes (number) */
+/** Parse a ZFS size value to bytes for ratio calculation.
+ * Backend sys.ZFSPools() returns used/avail/total as float64 GB values (plain numbers).
+ * lsblk returns sizes as strings with unit suffixes like "500G", "1.8T". */
 function parseSizeToBytes(s: string | number | undefined | null): number {
   if (s == null) return 0;
-  if (typeof s === 'number') return s;
+  if (typeof s === 'number') return s * (1024 ** 3); // assume GB
   const str = String(s).trim();
   const num = parseFloat(str);
   if (isNaN(num)) return 0;
   const unit = str.replace(/[0-9.]/g, '').toUpperCase();
-  const mult: Record<string, number> = { K: 1024, M: 1024**2, G: 1024**3, T: 1024**4, P: 1024**5 };
-  return num * (mult[unit] ?? 1);
+  const mult: Record<string, number> = { K: 1024, M: 1024 ** 2, G: 1024 ** 3, T: 1024 ** 4, P: 1024 ** 5 };
+  return num * (mult[unit] ?? (1024 ** 3)); // no unit → assume GB
+}
+
+/** Format a size value for display: number → "X.X GB", string with unit → as-is */
+function fmtSize(s: string | number | undefined | null): string {
+  if (s == null || s === '0' || s === 0) return '—';
+  if (typeof s === 'number') {
+    if (s >= 1024) return `${(s / 1024).toFixed(2)} TB`;
+    return `${s % 1 === 0 ? s : s.toFixed(1)} GB`;
+  }
+  const str = String(s).trim();
+  if (!str || str === '0') return '—';
+  // already has unit suffix
+  return str;
 }
 
 export async function apiPools(): Promise<Pool[]> {
   const data = await req<any>('/api/zfs/pools');
-  // Response: { pools: [...], available: true }
-  // Each pool: { name, health, used, avail, total, type, iops, read_mbps, write_mbps }
   const arr = data.pools ?? (Array.isArray(data) ? data : []);
   return arr.map((p: any) => {
-    const usedStr  = String(p.used  ?? p.usedBytes ?? '0');
-    const totalStr = String(p.total ?? p.size ?? '0');
-    const usedBytes  = parseSizeToBytes(usedStr);
-    const totalBytes = parseSizeToBytes(totalStr);
-    const healthRaw = (p.health ?? p.status ?? p.state ?? 'unknown');
+    const usedRaw  = p.used  ?? p.usedBytes ?? 0;
+    const totalRaw = p.total ?? p.size ?? 0;
+    const availRaw = p.avail ?? 0;
+    const usedBytes  = parseSizeToBytes(usedRaw);
+    const totalBytes = parseSizeToBytes(totalRaw);
+    const healthRaw  = String(p.health ?? p.status ?? p.state ?? 'unknown');
     return {
       name:       p.name ?? '—',
       status:     healthRaw.toLowerCase(),
       health:     healthRaw.toUpperCase(),
-      usedPct:    totalBytes > 0 ? Math.round((usedBytes / totalBytes) * 100) : (p.usedPct ?? p.used_pct ?? 0),
-      used:       usedStr,
-      avail:      String(p.avail ?? '—'),
-      total:      totalStr,
+      usedPct:    totalBytes > 0 ? Math.round((usedBytes / totalBytes) * 100) : (p.usedPct ?? 0),
+      used:       fmtSize(usedRaw),
+      avail:      fmtSize(availRaw),
+      total:      fmtSize(totalRaw),
       raid:       p.type ?? p.raid ?? p.vdev ?? '—',
       smart:      p.smart ?? undefined,
       iops:       p.iops ?? undefined,

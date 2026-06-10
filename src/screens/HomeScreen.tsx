@@ -375,13 +375,15 @@ function StorageScreen({ go }: any) {
                       <View style={{ flex: 1 }}>
                         <Text style={{ fontFamily: FONTS.monobold, fontSize: 14, color: C.text }}>{d.dev}</Text>
                         <Text style={{ fontFamily: FONTS.regular, fontSize: 13, color: C.textDim, marginTop: 2 }}>{d.model}</Text>
-                        {d.size && (
+                        {d.size && d.size !== '0' && (
                           <Text style={{ fontFamily: FONTS.mono, fontSize: 12, color: C.textFaint, marginTop: 2 }}>{d.size}</Text>
                         )}
                       </View>
                       <Pill tone={st}>
                         <Text style={{ fontFamily: FONTS.monobold, fontSize: 11, color: sc }}>
-                          SMART: {(d.smart ?? 'unknown').toUpperCase()}
+                          {d.smart === 'passed' ? '✓ SMART OK'
+                            : d.smart === 'warn' ? '⚠ SMART WARN'
+                            : 'SMART N/A'}
                         </Text>
                       </Pill>
                     </View>
