@@ -374,15 +374,25 @@ export interface MediaService {
 }
 
 export async function apiMedia(): Promise<MediaService[]> {
-  // Correct endpoint: /api/media/status/all
+  // handleMediaStatusAll returns a map keyed by server ID, e.g.:
+  // { "jellyfin": { active, installed, version, active_streams, port, url, name }, ... }
   const data = await req<any>('/api/media/status/all');
-  const arr = Array.isArray(data) ? data : (data.services ?? data.data ?? []);
-  return arr.map((m: any) => ({
-    name:    m.name ?? '—',
-    kind:    m.kind ?? m.type ?? 'film',
-    status:  m.status ?? 'unknown',
-    streams: m.streams ?? m.active_streams ?? 0,
-    lib:     m.lib ?? m.library ?? '—',
+  if (Array.isArray(data)) {
+    return data.map((m: any) => ({
+      name:    m.name ?? m.id ?? '—',
+      kind:    m.kind ?? m.type ?? 'film',
+      status:  m.active ? 'running' : 'stopped',
+      streams: m.active_streams ?? m.streams ?? 0,
+      lib:     m.lib ?? m.library ?? '—',
+    }));
+  }
+  // map form
+  return Object.entries(data).map(([id, m]: [string, any]) => ({
+    name:    m.name ?? id,
+    kind:    id === 'navidrome' ? 'music' : 'film',
+    status:  m.active ? 'running' : 'stopped',
+    streams: m.active_streams ?? 0,
+    lib:     m.libraries?.map((l: any) => l.name).join(', ') ?? '—',
   }));
 }
 
@@ -397,15 +407,15 @@ export interface ClamavStatus {
 }
 
 export async function apiClamav(): Promise<ClamavStatus> {
-  // Primary: /api/clamav/status, fallback: /api/antivirus/status
-  const data = await req<any>('/api/clamav/status');
+  // handleAVStatus returns: { installed: bool, active: bool, version: string }
+  const data = await req<any>('/api/antivirus/status');
   return {
-    protected:  data.protected ?? data.enabled ?? data.installed ?? false,
-    lastScan:   data.lastScan ?? data.last_scan ?? '—',
-    threats:    data.threats ?? data.threats_found ?? 0,
-    quarantine: data.quarantine ?? data.quarantined ?? 0,
-    scanned:    data.scanned ?? data.files_scanned ?? 0,
-    realtime:   data.realtime ?? data.real_time_protection ?? false,
+    protected:  data.active ?? data.installed ?? false,
+    lastScan:   data.last_scan ?? data.lastScan ?? '—',
+    threats:    data.threats ?? 0,
+    quarantine: data.quarantine ?? 0,
+    scanned:    data.scanned ?? 0,
+    realtime:   data.active ?? false,
   };
 }
 
@@ -427,14 +437,21 @@ export interface UpsStatus {
 }
 
 export async function apiUps(): Promise<UpsStatus> {
+  // upsStatusHandler returns:
+  // { connected: bool, status: { battery_pct, ups_load, status, runtime_min, input_voltage, temperature, ups_name, last_update, ... }, config, nut_raw }
   const data = await req<any>('/api/ups/status');
+  const s = data.status ?? data;
+  const runtimeMin = s.runtime_min ?? 0;
+  const runtimeStr = runtimeMin > 0
+    ? `${Math.floor(runtimeMin / 60)}h ${runtimeMin % 60}m`
+    : '—';
   return {
-    battery: data.battery ?? data.battery_charge ?? 0,
-    mode:    data.mode ?? data.ups_status ?? 'unknown',
-    runtime: data.runtime ?? data.battery_runtime ?? '—',
-    voltage: data.voltage ?? data.input_voltage ?? 0,
-    load:    data.load ?? data.ups_load ?? 0,
-    model:   data.model ?? data.name ?? '—',
+    battery: s.battery_pct  ?? s.battery_charge ?? s.battery ?? 0,
+    mode:    s.status       ?? s.ups_status_raw  ?? 'unknown',
+    runtime: runtimeStr,
+    voltage: s.input_voltage ?? s.voltage ?? 0,
+    load:    s.ups_load      ?? s.load    ?? 0,
+    model:   data.config?.ups_name ?? s.ups_name ?? data.model ?? '—',
   };
 }
 
