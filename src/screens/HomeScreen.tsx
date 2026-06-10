@@ -643,18 +643,32 @@ function ProcessesScreen({ go }: any) {
                   flex: i === 1 ? 2 : 1, textAlign: i > 1 ? 'right' : 'left' }}>{h}</Text>
               ))}
             </View>
-            {procs.map((p, i) => (
-              <View key={p.pid} style={{ padding: 12, flexDirection: 'row', alignItems: 'center',
-                borderTopWidth: i ? 1 : 0, borderTopColor: C.border }}>
-                <Text style={{ fontFamily: FONTS.mono, fontSize: 12, color: C.textFaint, flex: 1 }}>{p.pid}</Text>
-                <Text style={{ fontFamily: FONTS.semibold, fontSize: 13, color: C.text, flex: 2 }} numberOfLines={1}>{p.name}</Text>
-                <Text style={{ fontFamily: FONTS.mono, fontSize: 12, color: p.cpu > 20 ? C.warn : C.textDim, flex: 1, textAlign: 'right' }}>{p.cpu}</Text>
-                <Text style={{ fontFamily: FONTS.mono, fontSize: 12, color: C.textDim, flex: 1, textAlign: 'right' }}>{p.mem}</Text>
-                <TouchableOpacity onPress={() => kill(p.pid)} style={{ padding: 4 }}>
-                  <NbIcon name="x" size={16} color={C.danger} />
-                </TouchableOpacity>
-              </View>
-            ))}
+            {procs.map((p, i) => {
+              const cpuVal  = typeof p.cpu === 'number' ? p.cpu : parseFloat(p.cpu) || 0;
+              const memVal  = typeof p.mem === 'number' ? p.mem : parseFloat(p.mem) || 0;
+              const cpuHot  = cpuVal > 20;
+              const cpuStr  = cpuVal >= 10 ? cpuVal.toFixed(1) : cpuVal.toFixed(2);
+              const memStr  = memVal >= 10 ? memVal.toFixed(1) : memVal.toFixed(2);
+              return (
+                <View key={p.pid} style={{ paddingHorizontal: 12, paddingVertical: 10, flexDirection: 'row', alignItems: 'center',
+                  borderTopWidth: i ? 1 : 0, borderTopColor: C.border }}>
+                  <Text style={{ fontFamily: FONTS.mono, fontSize: 11, color: C.textFaint, width: 44 }}>{p.pid}</Text>
+                  <View style={{ flex: 1, marginRight: 8 }}>
+                    <Text style={{ fontFamily: FONTS.semibold, fontSize: 13, color: C.text }} numberOfLines={1}>{p.name}</Text>
+                    {p.user ? <Text style={{ fontFamily: FONTS.mono, fontSize: 10.5, color: C.textFaint, marginTop: 1 }}>{p.user}</Text> : null}
+                  </View>
+                  <View style={{ width: 52, alignItems: 'flex-end' }}>
+                    <Text style={{ fontFamily: FONTS.monobold, fontSize: 12, color: cpuHot ? C.warn : C.textDim }}>{cpuStr}%</Text>
+                  </View>
+                  <View style={{ width: 52, alignItems: 'flex-end', marginLeft: 4 }}>
+                    <Text style={{ fontFamily: FONTS.mono, fontSize: 12, color: C.textDim }}>{memStr}%</Text>
+                  </View>
+                  <TouchableOpacity onPress={() => kill(p.pid)} style={{ padding: 6, marginLeft: 4 }}>
+                    <NbIcon name="x" size={15} color={C.danger} />
+                  </TouchableOpacity>
+                </View>
+              );
+            })}
           </Card>
         )}
       </View>
