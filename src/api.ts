@@ -1,12 +1,10 @@
-// Nimbus API client — all real backend calls go here
-// Backend: https://github.com/gekomod/nimbus
+// Nimbus API client — cookie-based session auth (nimbus_session cookie)
+// Backend: gekomod/nimbus
 
 let _base = '';
-let _token = '';
 
-export function initApi(serverUrl: string, token: string) {
+export function initApi(serverUrl: string, _token?: string) {
   _base = serverUrl.replace(/\/+$/, '');
-  _token = token;
 }
 
 export function getBase() { return _base; }
@@ -14,9 +12,9 @@ export function getBase() { return _base; }
 async function req<T>(path: string, opts?: RequestInit): Promise<T> {
   const res = await fetch(`${_base}${path}`, {
     ...opts,
+    credentials: 'include', // send nimbus_session cookie
     headers: {
       'Content-Type': 'application/json',
-      ...((_token) ? { Authorization: `Bearer ${_token}` } : {}),
       ...(opts?.headers ?? {}),
     },
   });
@@ -26,8 +24,10 @@ async function req<T>(path: string, opts?: RequestInit): Promise<T> {
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 export interface LoginResponse {
-  token?: string;
-  username?: string;
+  success?: boolean;
+  needs_2fa?: boolean;
+  tmp_token?: string;
+  user?: { username?: string; uid?: number; groups?: string[] };
   [key: string]: any;
 }
 
@@ -40,6 +40,25 @@ export async function apiLogin(username: string, password: string): Promise<Logi
   });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json().catch(() => ({}));
+}
+
+export async function apiVerifyTotp(tmpToken: string, code: string): Promise<LoginResponse> {
+  const res = await fetch(`${_base}/api/login/verify-totp`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tmp_token: tmpToken, code }),
+  });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json().catch(() => ({}));
+}
+
+export async function apiLogout(): Promise<void> {
+  await fetch(`${_base}/api/logout`, { method: 'POST', credentials: 'include' });
+}
+
+export async function apiCheckAuth(): Promise<{ authenticated: boolean; username: string }> {
+  return req('/api/check-auth');
 }
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
@@ -87,7 +106,6 @@ export interface Disk {
 
 export async function apiPools(): Promise<Pool[]> {
   const data = await req<any>('/api/zfs/pools');
-  // Normalize various response shapes
   const arr = Array.isArray(data) ? data : (data.pools ?? data.data ?? []);
   return arr.map((p: any) => ({
     name: p.name ?? p.pool ?? '—',
@@ -101,13 +119,14 @@ export async function apiPools(): Promise<Pool[]> {
 }
 
 export async function apiDisks(): Promise<Disk[]> {
-  const data = await req<any>('/api/storage/disks');
-  const arr = Array.isArray(data) ? data : (data.disks ?? data.data ?? []);
+  // Correct endpoint: /api/storage/devices
+  const data = await req<any>('/api/storage/devices');
+  const arr = Array.isArray(data) ? data : (data.devices ?? data.disks ?? data.data ?? []);
   return arr.map((d: any) => ({
-    dev: d.dev ?? d.device ?? d.path ?? '—',
-    model: d.model ?? d.name ?? '—',
+    dev: d.dev ?? d.device ?? d.path ?? d.name ?? '—',
+    model: d.model ?? d.vendor ?? '—',
     temp: d.temp ?? d.temperature ?? 0,
-    smart: d.smart ?? d.health ?? 'unknown',
+    smart: d.smart ?? d.health ?? d.status ?? 'unknown',
     hours: d.hours ?? d.power_on_hours ?? undefined,
   }));
 }
@@ -138,9 +157,11 @@ export async function apiContainers(): Promise<Container[]> {
 }
 
 export async function apiContainerAction(id: string, action: 'start' | 'stop' | 'restart'): Promise<void> {
-  await fetch(`${_base}/services/docker/containers/${encodeURIComponent(id)}/action`, {
+  // Endpoint: POST /services/docker/container/{id} with body {action}
+  await fetch(`${_base}/services/docker/container/${encodeURIComponent(id)}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${_token}` },
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action }),
   });
 }
@@ -176,32 +197,44 @@ export async function apiNetwork(): Promise<{ interfaces: NetInterface[]; vpn?: 
 export interface Service {
   name: string;
   desc: string;
+  key: string;
   on: boolean;
 }
 
 export async function apiServices(): Promise<Service[]> {
   const endpoints = [
-    { key: 'samba', name: 'Samba', desc: 'SMB / udziały sieciowe', url: '/services/samba/status' },
-    { key: 'ssh', name: 'SSH', desc: 'OpenSSH · port 22', url: '/services/ssh/status' },
-    { key: 'nfs', name: 'NFS', desc: 'NFS exports', url: '/services/nfs/status' },
-    { key: 'ftp', name: 'FTP / SFTP', desc: 'vsftpd', url: '/services/ftp/status' },
+    { key: 'samba',  name: 'Samba',     desc: 'SMB / udziały sieciowe', url: '/services/samba/status' },
+    { key: 'ssh',    name: 'SSH',        desc: 'OpenSSH · port 22',      url: '/services/ssh/status' },
+    { key: 'nfs',    name: 'NFS',        desc: 'NFS exports',            url: '/api/nfs-server/status' },
+    { key: 'ftp',    name: 'FTP / SFTP', desc: 'vsftpd / sftp',         url: '/api/services/ftp-sftp/status' },
   ];
   const results = await Promise.allSettled(endpoints.map(e => req<any>(e.url)));
   return endpoints.map((e, i) => {
     const r = results[i];
     const data = r.status === 'fulfilled' ? r.value : null;
     return {
+      key: e.key,
       name: e.name,
       desc: e.desc,
-      on: data?.running ?? data?.active ?? (data?.status === 'running' || false),
+      on: data?.running ?? data?.active ?? data?.enabled ?? (data?.status === 'running' || false),
     };
   });
 }
 
 export async function apiServiceToggle(key: string, on: boolean): Promise<void> {
-  await fetch(`${_base}/services/${key}/${on ? 'start' : 'stop'}`, {
+  // Each service has its own toggle endpoint
+  const toggleUrls: Record<string, string> = {
+    samba: '/services/samba/toggle',
+    ssh:   '/services/ssh/toggle',
+    nfs:   '/api/nfs-server/toggle',
+    ftp:   '/api/services/ftp-sftp/toggle',
+  };
+  const url = toggleUrls[key] ?? `/services/${key}/toggle`;
+  await fetch(`${_base}${url}`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${_token}` },
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ running: on }),
   });
 }
 
@@ -214,13 +247,14 @@ export interface LogEntry {
 }
 
 export async function apiLogs(n = 100): Promise<LogEntry[]> {
-  const data = await req<any>(`/api/system/logs?n=${n}`);
+  // Correct endpoint: /api/logs
+  const data = await req<any>(`/api/logs?n=${n}`);
   const arr = Array.isArray(data) ? data : (data.logs ?? data.entries ?? data.data ?? []);
   return arr.map((e: any) => ({
     lvl: (e.level ?? e.lvl ?? e.severity ?? 'info').toLowerCase().replace('error', 'err'),
     t: e.time ?? e.t ?? e.timestamp ?? '',
-    src: e.source ?? e.src ?? e.service ?? '',
-    msg: e.message ?? e.msg ?? e.text ?? '',
+    src: e.source ?? e.src ?? e.service ?? e.unit ?? '',
+    msg: e.message ?? e.msg ?? e.text ?? String(e),
   }));
 }
 
@@ -234,11 +268,12 @@ export interface Process {
 }
 
 export async function apiProcesses(): Promise<Process[]> {
-  const data = await req<any>('/api/system/processes');
+  // Correct endpoint: /api/processes
+  const data = await req<any>('/api/processes');
   const arr = Array.isArray(data) ? data : (data.processes ?? data.data ?? []);
   return arr.map((p: any) => ({
     pid: p.pid ?? 0,
-    name: p.name ?? p.cmd ?? '—',
+    name: p.name ?? p.cmd ?? p.command ?? '—',
     cpu: p.cpu ?? p.cpu_percent ?? 0,
     mem: p.mem ?? p.mem_percent ?? p.memory ?? 0,
     user: p.user ?? p.username ?? '—',
@@ -246,9 +281,12 @@ export async function apiProcesses(): Promise<Process[]> {
 }
 
 export async function apiKillProcess(pid: number): Promise<void> {
-  await fetch(`${_base}/api/system/processes/${pid}`, {
-    method: 'DELETE',
-    headers: { Authorization: `Bearer ${_token}` },
+  // Correct endpoint: POST /diagnostics/processes/kill with {pid}
+  await fetch(`${_base}/diagnostics/processes/kill`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pid }),
   });
 }
 
@@ -261,7 +299,8 @@ export interface User {
 }
 
 export async function apiUsers(): Promise<User[]> {
-  const data = await req<any>('/api/users');
+  // Correct endpoint: /api/system/users
+  const data = await req<any>('/api/system/users');
   const arr = Array.isArray(data) ? data : (data.users ?? data.data ?? []);
   return arr.map((u: any) => ({
     name: u.name ?? u.username ?? '—',
@@ -281,7 +320,8 @@ export interface MediaService {
 }
 
 export async function apiMedia(): Promise<MediaService[]> {
-  const data = await req<any>('/api/media');
+  // Correct endpoint: /api/media/status/all
+  const data = await req<any>('/api/media/status/all');
   const arr = Array.isArray(data) ? data : (data.services ?? data.data ?? []);
   return arr.map((m: any) => ({
     name: m.name ?? '—',
@@ -292,7 +332,7 @@ export async function apiMedia(): Promise<MediaService[]> {
   }));
 }
 
-// ── Antivirus ─────────────────────────────────────────────────────────────────
+// ── ClamAV / Antivirus ────────────────────────────────────────────────────────
 export interface ClamavStatus {
   protected: boolean;
   lastScan: string;
@@ -303,9 +343,10 @@ export interface ClamavStatus {
 }
 
 export async function apiClamav(): Promise<ClamavStatus> {
-  const data = await req<any>('/api/antivirus/status');
+  // /api/clamav/status is the primary endpoint
+  const data = await req<any>('/api/clamav/status');
   return {
-    protected: data.protected ?? data.enabled ?? false,
+    protected: data.protected ?? data.enabled ?? data.installed ?? false,
     lastScan: data.lastScan ?? data.last_scan ?? '—',
     threats: data.threats ?? data.threats_found ?? 0,
     quarantine: data.quarantine ?? data.quarantined ?? 0,
@@ -315,9 +356,9 @@ export async function apiClamav(): Promise<ClamavStatus> {
 }
 
 export async function apiClamavScan(): Promise<void> {
-  await fetch(`${_base}/api/antivirus/scan`, {
+  await fetch(`${_base}/api/clamav/scan`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${_token}` },
+    credentials: 'include',
   });
 }
 
@@ -352,11 +393,12 @@ export interface Alert {
 }
 
 export async function apiAlerts(): Promise<Alert[]> {
-  const data = await req<any>('/api/notifications');
-  const arr = Array.isArray(data) ? data : (data.notifications ?? data.alerts ?? data.data ?? []);
+  // Correct endpoint: /api/notifications/history
+  const data = await req<any>('/api/notifications/history');
+  const arr = Array.isArray(data) ? data : (data.notifications ?? data.alerts ?? data.history ?? data.data ?? []);
   return arr.map((a: any) => ({
     lvl: a.level ?? a.lvl ?? a.type ?? 'info',
-    title: a.title ?? a.name ?? '—',
+    title: a.title ?? a.name ?? a.event ?? '—',
     time: a.time ?? a.timestamp ?? a.created_at ?? '',
     text: a.message ?? a.text ?? a.body ?? '',
   }));

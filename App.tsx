@@ -18,7 +18,7 @@ import HomeScreen from './src/screens/HomeScreen';
 import UpdateModal from './src/components/UpdateModal';
 import { loadSettings, saveSettings, clearSettings } from './src/storage';
 import { checkForUpdate, UpdateInfo } from './src/checkUpdate';
-import { initApi } from './src/api';
+import { initApi, apiCheckAuth } from './src/api';
 import { C } from './src/tokens';
 
 SplashScreen.preventAutoHideAsync();
@@ -47,21 +47,20 @@ function AppInner() {
       if (url) setServerUrl(url);
       if (u) setUsername(u);
       if (p) setPassword(p);
-      if (url && u && p) {
-        // Auto-login
-        import('./src/api').then(({ apiLogin, initApi }) => {
-          const base = url.startsWith('http') ? url : 'http://' + url;
-          apiLogin(u, p)
-            .then(data => {
-              const tok = data.token ?? '';
-              initApi(base, tok);
-              setApiToken(tok);
+      if (url) {
+        // Try to resume existing cookie session
+        const base = url.startsWith('http') ? url : 'http://' + url;
+        initApi(base);
+        apiCheckAuth()
+          .then(res => {
+            if (res.authenticated) {
               setServerUrl(base);
+              setUsername(res.username ?? u ?? '');
               setPhase('app');
-            })
-            .catch(() => { /* show login */ })
-            .finally(() => setLoaded(true));
-        });
+            }
+          })
+          .catch(() => { /* session expired — show login */ })
+          .finally(() => setLoaded(true));
       } else {
         setLoaded(true);
       }
@@ -79,9 +78,9 @@ function AppInner() {
 
   if (!fontsLoaded || !settingsLoaded) return null;
 
-  const handleLogin = (srv: string, user: string, pass: string, token: string) => {
-    setServerUrl(srv); setUsername(user); setPassword(pass); setApiToken(token);
-    initApi(srv, token);
+  const handleLogin = (srv: string, user: string, pass: string, _token: string) => {
+    setServerUrl(srv); setUsername(user); setPassword(pass);
+    initApi(srv);
     saveSettings(srv, user, pass);
     setPhase('app');
   };

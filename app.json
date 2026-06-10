@@ -31,11 +31,12 @@
     },
     "plugins": [
       "./plugins/withJava17",
+      "./plugins/withCleartextHttp",
       [
         "expo-build-properties",
         {
           "android": {
-            "kotlinVersion": "1.9.25",
+            "kotlinVersion": "2.1.21",
             "compileSdkVersion": 35,
             "targetSdkVersion": 35,
             "buildToolsVersion": "35.0.0"
