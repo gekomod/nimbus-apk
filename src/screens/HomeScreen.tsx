@@ -244,7 +244,7 @@ function Dashboard({ go }: any) {
           <View style={{ height: 18 }} />
           <SectionTitle action="Zobacz wszystkie" onAction={() => go('notifications')}>Powiadomienia</SectionTitle>
           <Card pad={6}>
-            {alerts!.map((a: any, i: number) => (
+            {alerts!.slice(0, 10).map((a: any, i: number) => (
               <View key={i} style={{ flexDirection: 'row', gap: 12, padding: 12, borderTopWidth: i ? 1 : 0, borderTopColor: C.border }}>
                 <View style={{ marginTop: 2 }}>
                   <NbIcon name={a.lvl === 'warn' ? 'alert' : a.lvl === 'ok' ? 'check' : 'bell'} size={18}
