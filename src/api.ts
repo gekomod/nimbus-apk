@@ -1,5 +1,5 @@
 // Nimbus API client — cookie-based session auth (nimbus_session cookie)
-// Backend: gekomod/nimbus
+// Based on gekomod/nimbus backend source
 
 let _base = '';
 
@@ -12,7 +12,7 @@ export function getBase() { return _base; }
 async function req<T>(path: string, opts?: RequestInit): Promise<T> {
   const res = await fetch(`${_base}${path}`, {
     ...opts,
-    credentials: 'include', // send nimbus_session cookie
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
       ...(opts?.headers ?? {}),
@@ -62,6 +62,9 @@ export async function apiCheckAuth(): Promise<{ authenticated: boolean; username
 }
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
+// /api/dashboard returns combined object:
+// { overview, pools, containers, mounts, network, processes, logs,
+//   smb, ssh, nfs, ftp, users, fstab, media }
 export interface DashboardData {
   cpu?: number;
   ram?: number;
@@ -78,7 +81,23 @@ export interface DashboardData {
 }
 
 export async function apiDashboard(): Promise<DashboardData> {
-  return req('/api/dashboard');
+  const data = await req<any>('/api/dashboard');
+  // Dashboard returns combined object; extract overview fields
+  const ov = data.overview ?? data;
+  return {
+    cpu:      ov.cpu ?? ov.cpu_percent ?? 0,
+    ram:      ov.ram ?? ov.ram_percent ?? ov.memory_percent ?? 0,
+    ramUsed:  ov.ramUsed ?? ov.ram_used ?? ov.memory_used ?? 0,
+    ramTotal: ov.ramTotal ?? ov.ram_total ?? ov.memory_total ?? 0,
+    temp:     ov.temp ?? ov.temperature ?? ov.cpu_temp ?? 0,
+    uptime:   ov.uptime ?? '—',
+    load:     ov.load ?? ov.load_avg ?? [],
+    download: ov.download ?? ov.rx ?? 0,
+    upload:   ov.upload ?? ov.tx ?? 0,
+    hostname: ov.hostname ?? '—',
+    os:       ov.os ?? ov.distro ?? '—',
+    version:  ov.version ?? '—',
+  };
 }
 
 export async function apiOverview(): Promise<any> {
@@ -102,33 +121,47 @@ export interface Disk {
   temp: number;
   smart: string;
   hours?: string;
+  size?: string;
+  io?: number;
 }
 
 export async function apiPools(): Promise<Pool[]> {
   const data = await req<any>('/api/zfs/pools');
-  const arr = Array.isArray(data) ? data : (data.pools ?? data.data ?? []);
-  return arr.map((p: any) => ({
-    name: p.name ?? p.pool ?? '—',
-    status: (p.status ?? p.state ?? 'unknown').toLowerCase(),
-    usedPct: p.usedPct ?? p.used_pct ?? (p.used && p.size ? Math.round((p.used / p.size) * 100) : 0),
-    used: p.used ?? p.usedBytes ?? 0,
-    total: p.total ?? p.size ?? 0,
-    raid: p.raid ?? p.vdev ?? p.config ?? '—',
-    smart: p.smart ?? 'unknown',
-  }));
+  // Response: { pools: [...], available: true }
+  // Each pool: { name, health, used, avail, total, type, iops, read_mbps, write_mbps }
+  const arr = data.pools ?? (Array.isArray(data) ? data : []);
+  return arr.map((p: any) => {
+    const used  = p.used  ?? p.usedBytes ?? 0;
+    const total = p.total ?? p.size ?? (used + (p.avail ?? 0));
+    return {
+      name:    p.name ?? '—',
+      status:  (p.health ?? p.status ?? p.state ?? 'unknown').toLowerCase(),
+      usedPct: total > 0 ? Math.round((used / total) * 100) : (p.usedPct ?? p.used_pct ?? 0),
+      used,
+      total,
+      raid:    p.type ?? p.raid ?? p.vdev ?? '—',
+      smart:   p.smart ?? 'unknown',
+    };
+  });
 }
 
 export async function apiDisks(): Promise<Disk[]> {
-  // Correct endpoint: /api/storage/devices
+  // Response: { devices: [...] }
+  // Each device: { bay, type, model, serial, vendor, size, fs, mount,
+  //                temp, hours, smart, io, read_mbps, write_mbps, iops }
   const data = await req<any>('/api/storage/devices');
-  const arr = Array.isArray(data) ? data : (data.devices ?? data.disks ?? data.data ?? []);
-  return arr.map((d: any) => ({
-    dev: d.dev ?? d.device ?? d.path ?? d.name ?? '—',
-    model: d.model ?? d.vendor ?? '—',
-    temp: d.temp ?? d.temperature ?? 0,
-    smart: d.smart ?? d.health ?? d.status ?? 'unknown',
-    hours: d.hours ?? d.power_on_hours ?? undefined,
-  }));
+  const arr = data.devices ?? (Array.isArray(data) ? data : []);
+  return arr
+    .filter((d: any) => d.type === 'disk' || !d.type)
+    .map((d: any) => ({
+      dev:   d.bay ?? d.name ?? d.dev ?? d.device ?? '—',
+      model: d.model ?? d.vendor ?? '—',
+      temp:  d.temp ?? d.temperature ?? 0,
+      smart: d.smart ?? d.health ?? 'unknown',
+      hours: d.hours != null ? String(d.hours) : undefined,
+      size:  d.size ?? undefined,
+      io:    d.io ?? d.util ?? 0,
+    }));
 }
 
 // ── Docker ────────────────────────────────────────────────────────────────────
@@ -146,18 +179,18 @@ export async function apiContainers(): Promise<Container[]> {
   const data = await req<any>('/services/docker/containers');
   const arr = Array.isArray(data) ? data : (data.containers ?? data.data ?? []);
   return arr.map((c: any) => ({
-    id: c.id ?? c.Id ?? c.name ?? '',
-    name: (c.name ?? c.Names?.[0] ?? '—').replace(/^\//, ''),
-    image: c.image ?? c.Image ?? '—',
+    id:     c.id ?? c.Id ?? c.name ?? '',
+    name:   (c.name ?? c.Names?.[0] ?? '—').replace(/^\//, ''),
+    image:  c.image ?? c.Image ?? '—',
     status: (c.status ?? c.State?.Status ?? c.state ?? 'unknown').toLowerCase(),
-    cpu: c.cpu ?? c.cpu_percent ?? 0,
-    ram: c.ram ?? c.memory_usage ?? c.mem ?? 0,
-    port: c.port ?? (c.Ports?.[0] ? `${c.Ports[0].PublicPort ?? c.Ports[0].PrivatePort}` : undefined),
+    cpu:    c.cpu ?? c.cpu_percent ?? 0,
+    ram:    c.ram ?? c.memory_usage ?? c.mem ?? 0,
+    port:   c.port ?? (c.Ports?.[0] ? `${c.Ports[0].PublicPort ?? c.Ports[0].PrivatePort}` : undefined),
   }));
 }
 
 export async function apiContainerAction(id: string, action: 'start' | 'stop' | 'restart'): Promise<void> {
-  // Endpoint: POST /services/docker/container/{id} with body {action}
+  // POST /services/docker/container/{id}  body: { action }
   await fetch(`${_base}/services/docker/container/${encodeURIComponent(id)}`, {
     method: 'POST',
     credentials: 'include',
@@ -181,14 +214,14 @@ export async function apiNetwork(): Promise<{ interfaces: NetInterface[]; vpn?: 
   const ifaces = Array.isArray(data) ? data : (data.interfaces ?? data.data ?? []);
   return {
     interfaces: ifaces.map((i: any) => ({
-      name: i.name ?? i.interface ?? '—',
-      ip: i.ip ?? i.address ?? i.addr ?? '—',
+      name:  i.name ?? i.interface ?? '—',
+      ip:    i.ip ?? i.address ?? i.addr ?? '—',
       speed: i.speed ?? '—',
-      up: i.up != null ? i.up : i.state === 'up',
-      rx: i.rx ?? i.rx_bytes ?? undefined,
-      tx: i.tx ?? i.tx_bytes ?? undefined,
+      up:    i.up != null ? i.up : i.state === 'up',
+      rx:    i.rx ?? i.rx_bytes ?? undefined,
+      tx:    i.tx ?? i.tx_bytes ?? undefined,
     })),
-    vpn: data.vpn ?? data.wireguard ?? null,
+    vpn:      data.vpn ?? data.wireguard ?? null,
     firewall: data.firewall ?? data.ufw ?? null,
   };
 }
@@ -202,27 +235,29 @@ export interface Service {
 }
 
 export async function apiServices(): Promise<Service[]> {
+  // Endpoints verified against server.go routes
   const endpoints = [
-    { key: 'samba',  name: 'Samba',     desc: 'SMB / udziały sieciowe', url: '/services/samba/status' },
-    { key: 'ssh',    name: 'SSH',        desc: 'OpenSSH · port 22',      url: '/services/ssh/status' },
-    { key: 'nfs',    name: 'NFS',        desc: 'NFS exports',            url: '/api/nfs-server/status' },
-    { key: 'ftp',    name: 'FTP / SFTP', desc: 'vsftpd / sftp',         url: '/api/services/ftp-sftp/status' },
+    { key: 'samba', name: 'Samba',     desc: 'SMB / udziały sieciowe', url: '/services/samba/status' },
+    { key: 'ssh',   name: 'SSH',        desc: 'OpenSSH · port 22',      url: '/services/ssh/status' },
+    { key: 'nfs',   name: 'NFS',        desc: 'NFS exports',            url: '/api/nfs-server/status' },
+    { key: 'ftp',   name: 'FTP / SFTP', desc: 'vsftpd / sftp',         url: '/api/services/ftp-sftp/status' },
   ];
   const results = await Promise.allSettled(endpoints.map(e => req<any>(e.url)));
   return endpoints.map((e, i) => {
     const r = results[i];
-    const data = r.status === 'fulfilled' ? r.value : null;
+    const d = r.status === 'fulfilled' ? r.value : null;
+    // NFS returns { active, installed, enabled, ... }
+    // Samba/SSH return { running, active, ... }
     return {
-      key: e.key,
+      key:  e.key,
       name: e.name,
       desc: e.desc,
-      on: data?.running ?? data?.active ?? data?.enabled ?? (data?.status === 'running' || false),
+      on:   d?.running ?? d?.active ?? d?.enabled ?? false,
     };
   });
 }
 
 export async function apiServiceToggle(key: string, on: boolean): Promise<void> {
-  // Each service has its own toggle endpoint
   const toggleUrls: Record<string, string> = {
     samba: '/services/samba/toggle',
     ssh:   '/services/ssh/toggle',
@@ -230,11 +265,15 @@ export async function apiServiceToggle(key: string, on: boolean): Promise<void> 
     ftp:   '/api/services/ftp-sftp/toggle',
   };
   const url = toggleUrls[key] ?? `/services/${key}/toggle`;
+  // NFS toggle uses { enable: bool }, others use { running: bool }
+  const body = key === 'nfs'
+    ? JSON.stringify({ enable: on })
+    : JSON.stringify({ running: on });
   await fetch(`${_base}${url}`, {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ running: on }),
+    body,
   });
 }
 
@@ -247,14 +286,14 @@ export interface LogEntry {
 }
 
 export async function apiLogs(n = 100): Promise<LogEntry[]> {
-  // Correct endpoint: /api/logs
+  // Correct endpoint: /api/logs  (NOT /api/system/logs)
   const data = await req<any>(`/api/logs?n=${n}`);
   const arr = Array.isArray(data) ? data : (data.logs ?? data.entries ?? data.data ?? []);
   return arr.map((e: any) => ({
     lvl: (e.level ?? e.lvl ?? e.severity ?? 'info').toLowerCase().replace('error', 'err'),
-    t: e.time ?? e.t ?? e.timestamp ?? '',
+    t:   e.time ?? e.t ?? e.timestamp ?? '',
     src: e.source ?? e.src ?? e.service ?? e.unit ?? '',
-    msg: e.message ?? e.msg ?? e.text ?? String(e),
+    msg: e.message ?? e.msg ?? e.text ?? (typeof e === 'string' ? e : ''),
   }));
 }
 
@@ -268,20 +307,20 @@ export interface Process {
 }
 
 export async function apiProcesses(): Promise<Process[]> {
-  // Correct endpoint: /api/processes
+  // Correct endpoint: /api/processes  (NOT /api/system/processes)
   const data = await req<any>('/api/processes');
   const arr = Array.isArray(data) ? data : (data.processes ?? data.data ?? []);
   return arr.map((p: any) => ({
-    pid: p.pid ?? 0,
+    pid:  p.pid ?? 0,
     name: p.name ?? p.cmd ?? p.command ?? '—',
-    cpu: p.cpu ?? p.cpu_percent ?? 0,
-    mem: p.mem ?? p.mem_percent ?? p.memory ?? 0,
+    cpu:  p.cpu ?? p.cpu_percent ?? 0,
+    mem:  p.mem ?? p.mem_percent ?? p.memory ?? 0,
     user: p.user ?? p.username ?? '—',
   }));
 }
 
 export async function apiKillProcess(pid: number): Promise<void> {
-  // Correct endpoint: POST /diagnostics/processes/kill with {pid}
+  // Correct endpoint: POST /diagnostics/processes/kill  body: { pid }
   await fetch(`${_base}/diagnostics/processes/kill`, {
     method: 'POST',
     credentials: 'include',
@@ -303,10 +342,10 @@ export async function apiUsers(): Promise<User[]> {
   const data = await req<any>('/api/system/users');
   const arr = Array.isArray(data) ? data : (data.users ?? data.data ?? []);
   return arr.map((u: any) => ({
-    name: u.name ?? u.username ?? '—',
-    role: u.role ?? u.group ?? '—',
+    name:   u.name ?? u.username ?? '—',
+    role:   u.role ?? u.group ?? '—',
     groups: Array.isArray(u.groups) ? u.groups.join(', ') : (u.groups ?? ''),
-    on: u.enabled ?? u.active ?? u.on ?? true,
+    on:     u.enabled ?? u.active ?? u.on ?? true,
   }));
 }
 
@@ -324,11 +363,11 @@ export async function apiMedia(): Promise<MediaService[]> {
   const data = await req<any>('/api/media/status/all');
   const arr = Array.isArray(data) ? data : (data.services ?? data.data ?? []);
   return arr.map((m: any) => ({
-    name: m.name ?? '—',
-    kind: m.kind ?? m.type ?? 'film',
-    status: m.status ?? 'unknown',
+    name:    m.name ?? '—',
+    kind:    m.kind ?? m.type ?? 'film',
+    status:  m.status ?? 'unknown',
     streams: m.streams ?? m.active_streams ?? 0,
-    lib: m.lib ?? m.library ?? '—',
+    lib:     m.lib ?? m.library ?? '—',
   }));
 }
 
@@ -343,15 +382,15 @@ export interface ClamavStatus {
 }
 
 export async function apiClamav(): Promise<ClamavStatus> {
-  // /api/clamav/status is the primary endpoint
+  // Primary: /api/clamav/status, fallback: /api/antivirus/status
   const data = await req<any>('/api/clamav/status');
   return {
-    protected: data.protected ?? data.enabled ?? data.installed ?? false,
-    lastScan: data.lastScan ?? data.last_scan ?? '—',
-    threats: data.threats ?? data.threats_found ?? 0,
+    protected:  data.protected ?? data.enabled ?? data.installed ?? false,
+    lastScan:   data.lastScan ?? data.last_scan ?? '—',
+    threats:    data.threats ?? data.threats_found ?? 0,
     quarantine: data.quarantine ?? data.quarantined ?? 0,
-    scanned: data.scanned ?? data.files_scanned ?? 0,
-    realtime: data.realtime ?? data.real_time_protection ?? false,
+    scanned:    data.scanned ?? data.files_scanned ?? 0,
+    realtime:   data.realtime ?? data.real_time_protection ?? false,
   };
 }
 
@@ -376,11 +415,11 @@ export async function apiUps(): Promise<UpsStatus> {
   const data = await req<any>('/api/ups/status');
   return {
     battery: data.battery ?? data.battery_charge ?? 0,
-    mode: data.mode ?? data.ups_status ?? 'unknown',
+    mode:    data.mode ?? data.ups_status ?? 'unknown',
     runtime: data.runtime ?? data.battery_runtime ?? '—',
     voltage: data.voltage ?? data.input_voltage ?? 0,
-    load: data.load ?? data.ups_load ?? 0,
-    model: data.model ?? data.name ?? '—',
+    load:    data.load ?? data.ups_load ?? 0,
+    model:   data.model ?? data.name ?? '—',
   };
 }
 
@@ -393,13 +432,14 @@ export interface Alert {
 }
 
 export async function apiAlerts(): Promise<Alert[]> {
-  // Correct endpoint: /api/notifications/history
+  // GET /api/notifications/history → returns cfg.History array directly
+  // Each entry: { t, sev, rule, ch, msg, delivered }
   const data = await req<any>('/api/notifications/history');
-  const arr = Array.isArray(data) ? data : (data.notifications ?? data.alerts ?? data.history ?? data.data ?? []);
+  const arr = Array.isArray(data) ? data : (data.history ?? data.notifications ?? data.data ?? []);
   return arr.map((a: any) => ({
-    lvl: a.level ?? a.lvl ?? a.type ?? 'info',
-    title: a.title ?? a.name ?? a.event ?? '—',
-    time: a.time ?? a.timestamp ?? a.created_at ?? '',
-    text: a.message ?? a.text ?? a.body ?? '',
+    lvl:   a.sev ?? a.level ?? a.lvl ?? a.type ?? 'info',
+    title: a.rule ?? a.title ?? a.name ?? '—',
+    time:  a.t ?? a.time ?? a.timestamp ?? '',
+    text:  a.msg ?? a.message ?? a.text ?? '',
   }));
 }
