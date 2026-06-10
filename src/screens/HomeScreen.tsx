@@ -5,6 +5,7 @@ import {
   RefreshControl, ScrollView, StyleSheet, Text,
   TextInput, TouchableOpacity, View,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { C, FONTS } from '../tokens';
 import {
   Bar, Card, Dot, ModuleHeader, NbIcon, Pill, Ring,
@@ -12,9 +13,10 @@ import {
 } from '../components/ui';
 import { useApi } from '../useApi';
 import {
-  apiAlerts, apiClamav, apiClamavScan, apiContainerAction, apiContainers,
-  apiDashboard, apiDisks, apiKillProcess, apiLogs, apiMedia, apiNetwork,
-  apiOverview, apiPools, apiProcesses, apiServiceToggle, apiServices,
+  apiAlerts, apiClamav, apiClamavScan, apiClamavRealtimeStatus, apiClamavRealtimeToggle,
+  apiContainerAction, apiContainers,
+  apiDashboard, apiDisks, apiExec, apiKillProcess, apiLogs, apiMedia, apiMediaAction,
+  apiNetwork, apiOverview, apiPools, apiProcesses, apiServiceToggle, apiServices,
   apiUps, apiUsers, getBase,
 } from '../api';
 
@@ -38,6 +40,26 @@ function LoadBox() {
       <ActivityIndicator color={C.accent} />
     </View>
   );
+}
+
+// ── smart status helpers ──────────────────────────────────────────────────────
+function smartColor(smart: string): string {
+  const s = (smart ?? '').toLowerCase();
+  if (s === 'passed') return C.ok;
+  if (s === 'warn') return C.warn;
+  return C.textFaint; // unknown / N/A / empty
+}
+
+function smartTone(smart: string): 'ok' | 'warn' | 'neutral' {
+  const s = (smart ?? '').toLowerCase();
+  if (s === 'passed') return 'ok';
+  if (s === 'warn') return 'warn';
+  return 'neutral';
+}
+
+// ── pool health helpers ───────────────────────────────────────────────────────
+function poolIsOnline(p: any): boolean {
+  return (p.health ?? p.status ?? '').toUpperCase() === 'ONLINE';
 }
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
@@ -192,22 +214,25 @@ function Dashboard({ go }: any) {
           <View style={{ height: 18 }} />
           <SectionTitle action="Zobacz wszystkie" onAction={() => go('storage')}>Pule ZFS</SectionTitle>
           <Card pad={6}>
-            {pools!.map((p: any, i: number) => (
-              <TouchableOpacity key={p.name} onPress={() => go('storage')} activeOpacity={0.75}
-                style={{ padding: 12, borderTopWidth: i ? 1 : 0, borderTopColor: C.border }}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 9 }}>
-                  <NbIcon name="database" size={18} color={p.status === 'healthy' ? C.accent : C.warn} />
-                  <Text style={{ fontFamily: FONTS.monobold, fontSize: 15, color: C.text }}>{p.name}</Text>
-                  <Text style={{ fontFamily: FONTS.regular, fontSize: 12, color: C.textFaint, flex: 1 }} numberOfLines={1}>{p.raid}</Text>
-                  <Pill tone={p.status === 'healthy' ? 'ok' : 'warn'}>
-                    <Text style={{ fontFamily: FONTS.monobold, fontSize: 11.5, color: p.status === 'healthy' ? C.ok : C.warn }}>
-                      {p.status === 'healthy' ? 'Sprawny' : p.status}
-                    </Text>
-                  </Pill>
-                </View>
-                <Bar value={p.usedPct} color={p.usedPct > 85 ? C.warn : C.accent} />
-              </TouchableOpacity>
-            ))}
+            {pools!.map((p: any, i: number) => {
+              const online = poolIsOnline(p);
+              return (
+                <TouchableOpacity key={p.name} onPress={() => go('storage')} activeOpacity={0.75}
+                  style={{ padding: 12, borderTopWidth: i ? 1 : 0, borderTopColor: C.border }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 9 }}>
+                    <NbIcon name="database" size={18} color={online ? C.accent : C.warn} />
+                    <Text style={{ fontFamily: FONTS.monobold, fontSize: 15, color: C.text }}>{p.name}</Text>
+                    <Text style={{ fontFamily: FONTS.regular, fontSize: 12, color: C.textFaint, flex: 1 }} numberOfLines={1}>{p.raid}</Text>
+                    <Pill tone={online ? 'ok' : 'warn'}>
+                      <Text style={{ fontFamily: FONTS.monobold, fontSize: 11.5, color: online ? C.ok : C.warn }}>
+                        {online ? 'ONLINE' : p.health}
+                      </Text>
+                    </Pill>
+                  </View>
+                  <Bar value={p.usedPct} color={p.usedPct > 85 ? C.warn : C.accent} />
+                </TouchableOpacity>
+              );
+            })}
           </Card>
         </>
       )}
@@ -276,63 +301,129 @@ function StorageScreen({ go }: any) {
       <ModuleHeader title="Magazyn" />
       <View style={{ paddingHorizontal: 16 }}>
         <SectionTitle>Pule ZFS</SectionTitle>
-        {lp ? <LoadBox /> : ep ? <ErrBox msg={ep} onRetry={rp} /> : pools!.map((p: any) => (
-          <View key={p.name} style={{ marginBottom: 12 }}>
-            <Card pad={16}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
-                <Ring value={p.usedPct} size={72} sw={8} color={p.usedPct > 85 ? C.warn : C.accent} sub="użyte" />
-                <View style={{ flex: 1 }}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                    <Text style={{ fontFamily: FONTS.monobold, fontSize: 18, color: C.text }}>{p.name}</Text>
-                    <Pill tone={p.status === 'healthy' ? 'ok' : 'warn'}>
-                      <Text style={{ fontFamily: FONTS.monobold, fontSize: 11, color: p.status === 'healthy' ? C.ok : C.warn }}>
-                        {p.status === 'healthy' ? 'Sprawny' : p.status}
-                      </Text>
-                    </Pill>
-                  </View>
-                  <Text style={{ fontFamily: FONTS.regular, fontSize: 12.5, color: C.textDim, marginTop: 4 }}>{p.raid}</Text>
-                  {(p.used != null || p.total != null) && (
-                    <Text style={{ fontFamily: FONTS.mono, fontSize: 13, color: C.text, marginTop: 8 }}>
-                      {p.used} / {p.total}
-                    </Text>
-                  )}
-                  {p.smart && (
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 6 }}>
-                      <NbIcon name={p.smart === 'passed' ? 'shield_check' : 'alert'} size={14}
-                        color={p.smart === 'passed' ? C.ok : C.warn} />
-                      <Text style={{ fontFamily: FONTS.monobold, fontSize: 12, color: p.smart === 'passed' ? C.ok : C.warn }}>
-                        SMART: {p.smart.toUpperCase()}
-                      </Text>
+        {lp ? <LoadBox /> : ep ? <ErrBox msg={ep} onRetry={rp} /> : pools!.map((p: any) => {
+          const online = poolIsOnline(p);
+          return (
+            <View key={p.name} style={{ marginBottom: 12 }}>
+              <Card pad={16}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+                  <Ring value={p.usedPct} size={72} sw={8} color={p.usedPct > 85 ? C.warn : C.accent} sub="użyte" />
+                  <View style={{ flex: 1 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <Text style={{ fontFamily: FONTS.monobold, fontSize: 18, color: C.text }}>{p.name}</Text>
+                      <Pill tone={online ? 'ok' : 'warn'}>
+                        <Text style={{ fontFamily: FONTS.monobold, fontSize: 11, color: online ? C.ok : C.warn }}>
+                          {online ? 'ONLINE' : p.health}
+                        </Text>
+                      </Pill>
                     </View>
-                  )}
+                    <Text style={{ fontFamily: FONTS.regular, fontSize: 12.5, color: C.textDim, marginTop: 4 }}>{p.raid}</Text>
+                    {(p.used != null || p.total != null) && (
+                      <Text style={{ fontFamily: FONTS.mono, fontSize: 13, color: C.text, marginTop: 8 }}>
+                        {p.used} / {p.total}
+                      </Text>
+                    )}
+                    {p.avail && p.avail !== '—' && (
+                      <Text style={{ fontFamily: FONTS.mono, fontSize: 11.5, color: C.textFaint, marginTop: 2 }}>
+                        Wolne: {p.avail}
+                      </Text>
+                    )}
+                  </View>
                 </View>
-              </View>
-            </Card>
-          </View>
-        ))}
+                {(p.read_mbps != null || p.write_mbps != null || p.iops != null) && (
+                  <View style={{ flexDirection: 'row', gap: 16, marginTop: 12, paddingTop: 12,
+                    borderTopWidth: 1, borderTopColor: C.border }}>
+                    {p.read_mbps != null && (
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                        <NbIcon name="arrow_down" size={12} color={C.accent} />
+                        <Text style={{ fontFamily: FONTS.mono, fontSize: 11.5, color: C.textDim }}>
+                          {p.read_mbps} MB/s
+                        </Text>
+                      </View>
+                    )}
+                    {p.write_mbps != null && (
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                        <NbIcon name="arrow_up" size={12} color={C.ok} />
+                        <Text style={{ fontFamily: FONTS.mono, fontSize: 11.5, color: C.textDim }}>
+                          {p.write_mbps} MB/s
+                        </Text>
+                      </View>
+                    )}
+                    {p.iops != null && (
+                      <Text style={{ fontFamily: FONTS.mono, fontSize: 11.5, color: C.textFaint }}>
+                        IOPS: {p.iops}
+                      </Text>
+                    )}
+                  </View>
+                )}
+              </Card>
+            </View>
+          );
+        })}
 
         {(disks?.length ?? 0) > 0 && (
           <>
             <View style={{ height: 8 }} />
             <SectionTitle>Dyski fizyczne</SectionTitle>
             <Card pad={6}>
-              {disks!.map((d: any, i: number) => (
-                <View key={d.dev} style={{ padding: 14, borderTopWidth: i ? 1 : 0, borderTopColor: C.border }}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <Text style={{ fontFamily: FONTS.monobold, fontSize: 14, color: C.text }}>{d.dev}</Text>
-                    <Pill tone={d.smart === 'passed' ? 'ok' : 'warn'}>
-                      <Text style={{ fontFamily: FONTS.monobold, fontSize: 11, color: d.smart === 'passed' ? C.ok : C.warn }}>
-                        {d.smart?.toUpperCase()}
-                      </Text>
-                    </Pill>
+              {disks!.map((d: any, i: number) => {
+                const sc = smartColor(d.smart);
+                const st = smartTone(d.smart);
+                return (
+                  <View key={d.dev} style={{ padding: 14, borderTopWidth: i ? 1 : 0, borderTopColor: C.border }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ fontFamily: FONTS.monobold, fontSize: 14, color: C.text }}>{d.dev}</Text>
+                        <Text style={{ fontFamily: FONTS.regular, fontSize: 13, color: C.textDim, marginTop: 2 }}>{d.model}</Text>
+                        {d.size && (
+                          <Text style={{ fontFamily: FONTS.mono, fontSize: 12, color: C.textFaint, marginTop: 2 }}>{d.size}</Text>
+                        )}
+                      </View>
+                      <Pill tone={st}>
+                        <Text style={{ fontFamily: FONTS.monobold, fontSize: 11, color: sc }}>
+                          SMART: {(d.smart ?? 'unknown').toUpperCase()}
+                        </Text>
+                      </Pill>
+                    </View>
+                    {/* S.M.A.R.T. details */}
+                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginTop: 8 }}>
+                      {d.temp > 0 && (
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                          <NbIcon name="thermometer" size={12} color={C.textFaint} />
+                          <Text style={{ fontFamily: FONTS.mono, fontSize: 11.5, color: C.textFaint }}>{d.temp}°C</Text>
+                        </View>
+                      )}
+                      {d.hours && (
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                          <NbIcon name="clock" size={12} color={C.textFaint} />
+                          <Text style={{ fontFamily: FONTS.mono, fontSize: 11.5, color: C.textFaint }}>{d.hours}h</Text>
+                        </View>
+                      )}
+                      {d.read_mbps != null && (
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                          <NbIcon name="arrow_down" size={12} color={C.accent} />
+                          <Text style={{ fontFamily: FONTS.mono, fontSize: 11.5, color: C.textDim }}>{d.read_mbps} MB/s</Text>
+                        </View>
+                      )}
+                      {d.write_mbps != null && (
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                          <NbIcon name="arrow_up" size={12} color={C.ok} />
+                          <Text style={{ fontFamily: FONTS.mono, fontSize: 11.5, color: C.textDim }}>{d.write_mbps} MB/s</Text>
+                        </View>
+                      )}
+                      {d.iops != null && (
+                        <Text style={{ fontFamily: FONTS.mono, fontSize: 11.5, color: C.textFaint }}>IOPS: {d.iops}</Text>
+                      )}
+                      {d.pool && (
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                          <NbIcon name="database" size={12} color={C.purple} />
+                          <Text style={{ fontFamily: FONTS.mono, fontSize: 11.5, color: C.purple }}>{d.pool}</Text>
+                        </View>
+                      )}
+                    </View>
                   </View>
-                  <Text style={{ fontFamily: FONTS.regular, fontSize: 13, color: C.textDim, marginTop: 3 }}>{d.model}</Text>
-                  <View style={{ flexDirection: 'row', gap: 16, marginTop: 6 }}>
-                    {d.temp > 0 && <Text style={{ fontFamily: FONTS.mono, fontSize: 12, color: C.textFaint }}>🌡 {d.temp}°C</Text>}
-                    {d.hours && <Text style={{ fontFamily: FONTS.mono, fontSize: 12, color: C.textFaint }}>⏱ {d.hours}</Text>}
-                  </View>
-                </View>
-              ))}
+                );
+              })}
             </Card>
           </>
         )}
@@ -350,11 +441,13 @@ function DockerScreen({ go }: any) {
   const [actioning, setActioning] = useState<string | null>(null);
   useEffect(() => { if (data) setContainers(data); }, [data]);
 
-  const action = async (c: any, act: 'start' | 'stop') => {
+  const action = async (c: any, act: 'start' | 'stop' | 'restart') => {
     setActioning(c.id);
-    setContainers(cs => cs.map(x => x.id === c.id ? { ...x, status: act === 'start' ? 'running' : 'stopped' } : x));
+    if (act !== 'restart') {
+      setContainers(cs => cs.map(x => x.id === c.id ? { ...x, status: act === 'start' ? 'running' : 'stopped' } : x));
+    }
     try { await apiContainerAction(c.id, act); } catch {}
-    setActioning(null);
+    setTimeout(() => { setActioning(null); refresh(); }, 1500);
   };
 
   return (
@@ -383,28 +476,42 @@ function DockerScreen({ go }: any) {
                 <View key={c.id} style={{ padding: 14, borderTopWidth: i ? 1 : 0, borderTopColor: C.border }}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
                     <View style={{ flex: 1 }}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                         <Dot tone={c.status === 'running' ? 'ok' : 'off'} />
                         <Text style={{ fontFamily: FONTS.semibold, fontSize: 15, color: C.text }}>{c.name}</Text>
+                        <Pill tone={c.status === 'running' ? 'ok' : 'neutral'}>
+                          <Text style={{ fontFamily: FONTS.monobold, fontSize: 10, color: c.status === 'running' ? C.ok : C.textFaint }}>
+                            {c.status.toUpperCase()}
+                          </Text>
+                        </Pill>
                       </View>
                       <Text style={{ fontFamily: FONTS.mono, fontSize: 11.5, color: C.textFaint, marginTop: 3 }}>{c.image}</Text>
-                      {c.status === 'running' && c.cpu > 0 && (
+                      {c.status === 'running' && (
                         <Text style={{ fontFamily: FONTS.mono, fontSize: 11.5, color: C.textDim, marginTop: 3 }}>
-                          CPU {c.cpu}% · RAM {c.ram} MB{c.port ? ` · :${c.port}` : ''}
+                          CPU {c.cpu}%{c.ram ? ` · RAM ${c.ram} MB` : ''}{c.port ? ` · :${c.port}` : ''}
                         </Text>
                       )}
                     </View>
-                    <TouchableOpacity onPress={() => action(c, c.status === 'running' ? 'stop' : 'start')}
-                      disabled={actioning === c.id} activeOpacity={0.75}
-                      style={{ paddingHorizontal: 14, paddingVertical: 7, borderRadius: 8,
-                        backgroundColor: c.status === 'running' ? C.dangerDim : C.okDim }}>
-                      {actioning === c.id
-                        ? <ActivityIndicator size="small" color={c.status === 'running' ? C.danger : C.ok} />
-                        : <Text style={{ fontFamily: FONTS.semibold, fontSize: 13,
-                            color: c.status === 'running' ? C.danger : C.ok }}>
-                            {c.status === 'running' ? 'Stop' : 'Start'}
-                          </Text>}
-                    </TouchableOpacity>
+                    <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+                      {c.status === 'running' && (
+                        <TouchableOpacity onPress={() => action(c, 'restart')}
+                          disabled={actioning === c.id} activeOpacity={0.75}
+                          style={{ paddingHorizontal: 10, paddingVertical: 7, borderRadius: 8, backgroundColor: C.accentDim }}>
+                          <NbIcon name="refresh" size={14} color={C.accent} />
+                        </TouchableOpacity>
+                      )}
+                      <TouchableOpacity onPress={() => action(c, c.status === 'running' ? 'stop' : 'start')}
+                        disabled={actioning === c.id} activeOpacity={0.75}
+                        style={{ paddingHorizontal: 14, paddingVertical: 7, borderRadius: 8,
+                          backgroundColor: c.status === 'running' ? C.dangerDim : C.okDim }}>
+                        {actioning === c.id
+                          ? <ActivityIndicator size="small" color={c.status === 'running' ? C.danger : C.ok} />
+                          : <Text style={{ fontFamily: FONTS.semibold, fontSize: 13,
+                              color: c.status === 'running' ? C.danger : C.ok }}>
+                              {c.status === 'running' ? 'Stop' : 'Start'}
+                            </Text>}
+                      </TouchableOpacity>
+                    </View>
                   </View>
                 </View>
               ))}
@@ -430,28 +537,49 @@ function NetworkScreen({ go }: any) {
         {loading ? <LoadBox /> : error ? <ErrBox msg={error} onRetry={refresh} /> : (
           <>
             <SectionTitle>Interfejsy</SectionTitle>
-            <Card pad={6}>
-              {ifaces.map((iface: any, i: number) => (
-                <View key={iface.name} style={{ padding: 14, borderTopWidth: i ? 1 : 0, borderTopColor: C.border }}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                      <Dot tone={iface.up ? 'ok' : 'off'} />
-                      <View>
-                        <Text style={{ fontFamily: FONTS.monobold, fontSize: 15, color: C.text }}>{iface.name}</Text>
-                        <Text style={{ fontFamily: FONTS.mono, fontSize: 12, color: C.textDim }}>{iface.ip}</Text>
+            {ifaces.length === 0 ? (
+              <Card pad={24} style={{ alignItems: 'center' }}>
+                <NbIcon name="globe" size={32} color={C.textFaint} />
+                <Text style={{ fontFamily: FONTS.regular, fontSize: 14, color: C.textDim, marginTop: 12 }}>Brak interfejsów sieciowych</Text>
+              </Card>
+            ) : (
+              <Card pad={6}>
+                {ifaces.map((iface: any, i: number) => (
+                  <View key={iface.name} style={{ padding: 14, borderTopWidth: i ? 1 : 0, borderTopColor: C.border }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                        <Dot tone={iface.up ? 'ok' : 'off'} />
+                        <View>
+                          <Text style={{ fontFamily: FONTS.monobold, fontSize: 15, color: C.text }}>{iface.name}</Text>
+                          <Text style={{ fontFamily: FONTS.mono, fontSize: 12, color: C.textDim }}>{iface.ip}</Text>
+                        </View>
                       </View>
+                      <Text style={{ fontFamily: FONTS.mono, fontSize: 12, color: C.textFaint }}>{iface.speed}</Text>
                     </View>
-                    <Text style={{ fontFamily: FONTS.mono, fontSize: 12, color: C.textFaint }}>{iface.speed}</Text>
+                    {(iface.rx_mbps != null || iface.tx_mbps != null || iface.rx != null || iface.tx != null) && (
+                      <View style={{ flexDirection: 'row', gap: 16, marginTop: 6 }}>
+                        {(iface.rx_mbps != null || iface.rx != null) && (
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                            <NbIcon name="arrow_down" size={12} color={C.accent} />
+                            <Text style={{ fontFamily: FONTS.mono, fontSize: 11, color: C.textFaint }}>
+                              {iface.rx_mbps != null ? `${iface.rx_mbps} MB/s` : iface.rx}
+                            </Text>
+                          </View>
+                        )}
+                        {(iface.tx_mbps != null || iface.tx != null) && (
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                            <NbIcon name="arrow_up" size={12} color={C.ok} />
+                            <Text style={{ fontFamily: FONTS.mono, fontSize: 11, color: C.textFaint }}>
+                              {iface.tx_mbps != null ? `${iface.tx_mbps} MB/s` : iface.tx}
+                            </Text>
+                          </View>
+                        )}
+                      </View>
+                    )}
                   </View>
-                  {(iface.rx != null || iface.tx != null) && (
-                    <View style={{ flexDirection: 'row', gap: 16, marginTop: 6 }}>
-                      {iface.rx != null && <Text style={{ fontFamily: FONTS.mono, fontSize: 11, color: C.textFaint }}>↓ {iface.rx}</Text>}
-                      {iface.tx != null && <Text style={{ fontFamily: FONTS.mono, fontSize: 11, color: C.textFaint }}>↑ {iface.tx}</Text>}
-                    </View>
-                  )}
-                </View>
-              ))}
-            </Card>
+                ))}
+              </Card>
+            )}
             {(fw || vpn) && (
               <>
                 <View style={{ height: 18 }} />
@@ -487,32 +615,65 @@ function NetworkScreen({ go }: any) {
 // ── Media ─────────────────────────────────────────────────────────────────────
 function MediaScreen({ go }: any) {
   const { data, loading, error, refresh } = useApi(apiMedia, []);
+  const [media, setMedia] = useState<any[]>([]);
+  const [actioning, setActioning] = useState<string | null>(null);
+  useEffect(() => { if (data) setMedia(data); }, [data]);
+
+  const doAction = async (m: any, act: 'start' | 'stop') => {
+    setActioning(m.id);
+    setMedia(ms => ms.map(x => x.id === m.id ? { ...x, status: act === 'start' ? 'running' : 'stopped' } : x));
+    try { await apiMediaAction(m.id, act); } catch {}
+    setTimeout(() => { setActioning(null); refresh(); }, 2000);
+  };
+
   return (
     <ScrollView contentContainerStyle={{ paddingBottom: 24 }}
       refreshControl={<RefreshControl refreshing={loading} onRefresh={refresh} tintColor={C.accent} />}>
       <ModuleHeader title="Media" onBack={() => go('__back')} />
       <View style={{ paddingHorizontal: 16 }}>
-        {loading ? <LoadBox /> : error ? <ErrBox msg={error} onRetry={refresh} /> : data!.map((m: any, i: number) => (
-          <View key={m.name} style={{ marginBottom: 12 }}>
-            <Card pad={14}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-                <View style={{ width: 44, height: 44, borderRadius: 12, backgroundColor: C.accentDim,
-                  alignItems: 'center', justifyContent: 'center' }}>
-                  <NbIcon name={m.kind === 'music' ? 'music' : 'film'} size={22} color={C.accent} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                    <Text style={{ fontFamily: FONTS.semibold, fontSize: 16, color: C.text }}>{m.name}</Text>
-                    <Dot tone={m.status === 'online' ? 'ok' : 'off'} />
+        {loading ? <LoadBox /> : error ? <ErrBox msg={error} onRetry={refresh} /> : media.map((m: any) => {
+          const running = m.status === 'running';
+          return (
+            <View key={m.id ?? m.name} style={{ marginBottom: 12 }}>
+              <Card pad={14}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                  <View style={{ width: 44, height: 44, borderRadius: 12, backgroundColor: C.accentDim,
+                    alignItems: 'center', justifyContent: 'center' }}>
+                    <NbIcon name={m.kind === 'music' ? 'music' : 'film'} size={22} color={C.accent} />
                   </View>
-                  <Text style={{ fontFamily: FONTS.mono, fontSize: 12, color: C.textDim }}>{m.lib}</Text>
-                  {m.status === 'online' && m.streams > 0 &&
-                    <Text style={{ fontFamily: FONTS.mono, fontSize: 12, color: C.ok }}>{m.streams} strumieni aktywnych</Text>}
+                  <View style={{ flex: 1 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                      <Text style={{ fontFamily: FONTS.semibold, fontSize: 16, color: C.text }}>{m.name}</Text>
+                      <Pill tone={running ? 'ok' : 'neutral'}>
+                        <Text style={{ fontFamily: FONTS.monobold, fontSize: 10, color: running ? C.ok : C.textFaint }}>
+                          {running ? 'AKTYWNY' : 'NIEAKTYWNY'}
+                        </Text>
+                      </Pill>
+                    </View>
+                    {m.version && (
+                      <Text style={{ fontFamily: FONTS.mono, fontSize: 11.5, color: C.textFaint, marginTop: 1 }}>v{m.version}</Text>
+                    )}
+                    {running && m.streams > 0 && (
+                      <Text style={{ fontFamily: FONTS.mono, fontSize: 12, color: C.ok, marginTop: 2 }}>
+                        {m.streams} strumieni aktywnych
+                      </Text>
+                    )}
+                  </View>
+                  <TouchableOpacity onPress={() => doAction(m, running ? 'stop' : 'start')}
+                    disabled={actioning === m.id} activeOpacity={0.75}
+                    style={{ paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8,
+                      backgroundColor: running ? C.dangerDim : C.okDim }}>
+                    {actioning === m.id
+                      ? <ActivityIndicator size="small" color={running ? C.danger : C.ok} />
+                      : <Text style={{ fontFamily: FONTS.semibold, fontSize: 13, color: running ? C.danger : C.ok }}>
+                          {running ? 'Stop' : 'Start'}
+                        </Text>}
+                  </TouchableOpacity>
                 </View>
-              </View>
-            </Card>
-          </View>
-        ))}
+              </Card>
+            </View>
+          );
+        })}
       </View>
     </ScrollView>
   );
@@ -522,13 +683,29 @@ function MediaScreen({ go }: any) {
 function AntivirusScreen({ go }: any) {
   const { data, loading, error, refresh } = useApi(apiClamav, null);
   const [scanning, setScanning] = useState(false);
+  const [rtActive, setRtActive] = useState<boolean | null>(null);
+  const [rtLoading, setRtLoading] = useState(false);
   const spin = useRef(new Animated.Value(0)).current;
+
+  // load realtime status
+  useEffect(() => {
+    apiClamavRealtimeStatus()
+      .then(r => setRtActive(r.active))
+      .catch(() => setRtActive(null));
+  }, []);
 
   const startScan = async () => {
     setScanning(true);
     Animated.loop(Animated.timing(spin, { toValue: 1, duration: 1000, useNativeDriver: true, easing: Easing.linear })).start();
     try { await apiClamavScan(); } catch {}
     setTimeout(() => { setScanning(false); spin.stopAnimation(); spin.setValue(0); refresh(); }, 3000);
+  };
+
+  const toggleRealtime = async (val: boolean) => {
+    setRtLoading(true);
+    setRtActive(val);
+    try { await apiClamavRealtimeToggle(val); } catch { setRtActive(!val); }
+    setRtLoading(false);
   };
 
   const rotate = spin.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
@@ -548,8 +725,22 @@ function AntivirusScreen({ go }: any) {
                   {scanning ? 'Skanowanie…' : data.protected ? 'Chroniony' : 'Niezabezpieczony'}
                 </Text>
                 <Text style={{ fontFamily: FONTS.regular, fontSize: 14, color: C.textDim, marginTop: 4 }}>
-                  {data.realtime ? 'Ochrona w czasie rzeczywistym · ' : ''}{data.lastScan}
+                  {data.lastScan}
                 </Text>
+              </View>
+            </Card>
+            <View style={{ height: 14 }} />
+            {/* realtime protection toggle */}
+            <Card pad={6}>
+              <View style={{ paddingHorizontal: 12 }}>
+                <Row icon="shield" iconTone={rtActive ? 'ok' : 'neutral'}
+                  title="Ochrona w czasie rzeczywistym"
+                  sub={rtActive ? 'Aktywna — monitoruje system' : 'Nieaktywna'}
+                  trailing={
+                    rtLoading
+                      ? <ActivityIndicator size="small" color={C.ok} />
+                      : <Toggle on={rtActive ?? false} onChange={toggleRealtime} />
+                  } />
               </View>
             </Card>
             <View style={{ height: 14 }} />
@@ -644,11 +835,11 @@ function ProcessesScreen({ go }: any) {
               ))}
             </View>
             {procs.map((p, i) => {
-              const cpuVal  = typeof p.cpu === 'number' ? p.cpu : parseFloat(p.cpu) || 0;
-              const memVal  = typeof p.mem === 'number' ? p.mem : parseFloat(p.mem) || 0;
-              const cpuHot  = cpuVal > 20;
-              const cpuStr  = cpuVal >= 10 ? cpuVal.toFixed(1) : cpuVal.toFixed(2);
-              const memStr  = memVal >= 10 ? memVal.toFixed(1) : memVal.toFixed(2);
+              const cpuVal = typeof p.cpu === 'number' ? p.cpu : parseFloat(p.cpu) || 0;
+              const memVal = typeof p.mem === 'number' ? p.mem : parseFloat(p.mem) || 0;
+              const cpuHot = cpuVal > 20;
+              const cpuStr = cpuVal >= 10 ? cpuVal.toFixed(1) : cpuVal.toFixed(2);
+              const memStr = memVal >= 10 ? memVal.toFixed(1) : memVal.toFixed(2);
               return (
                 <View key={p.pid} style={{ paddingHorizontal: 12, paddingVertical: 10, flexDirection: 'row', alignItems: 'center',
                   borderTopWidth: i ? 1 : 0, borderTopColor: C.border }}>
@@ -773,34 +964,78 @@ function NotificationsScreen({ go }: any) {
 
 // ── Terminal ──────────────────────────────────────────────────────────────────
 function TerminalScreen({ go }: any) {
-  const [lines, setLines] = useState(['nimbus@nas:~$ ']);
+  const [lines, setLines] = useState<{ text: string; type: 'prompt' | 'output' | 'error' }[]>([
+    { text: 'nimbus@nas:~$ ', type: 'prompt' },
+  ]);
   const [input, setInput] = useState('');
-  const send = () => {
-    if (!input.trim()) return;
-    setLines(ls => [...ls, `nimbus@nas:~$ ${input}`, 'bash: command not available in remote view', '']);
+  const [history, setHistory] = useState<string[]>([]);
+  const [histIdx, setHistIdx] = useState(-1);
+  const [busy, setBusy] = useState(false);
+  const scrollRef = useRef<ScrollView>(null);
+
+  const send = async () => {
+    const cmd = input.trim();
+    if (!cmd) return;
     setInput('');
+    setHistory(h => [cmd, ...h.slice(0, 49)]);
+    setHistIdx(-1);
+    setLines(ls => [...ls, { text: `$ ${cmd}`, type: 'prompt' }]);
+    setBusy(true);
+    try {
+      const res = await apiExec(cmd);
+      const out = res.output ?? '';
+      const outLines = out.split('\n').map(l => ({ text: l, type: (res.ok ? 'output' : 'error') as 'output' | 'error' }));
+      setLines(ls => [...ls, ...outLines]);
+    } catch (e: any) {
+      setLines(ls => [...ls, { text: `Error: ${e?.message ?? 'unknown'}`, type: 'error' }]);
+    }
+    setBusy(false);
+    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
   };
+
+  const onKeyPress = ({ nativeEvent }: any) => {
+    if (nativeEvent.key === 'ArrowUp') {
+      const idx = Math.min(histIdx + 1, history.length - 1);
+      setHistIdx(idx);
+      if (history[idx]) setInput(history[idx]);
+    } else if (nativeEvent.key === 'ArrowDown') {
+      const idx = Math.max(histIdx - 1, -1);
+      setHistIdx(idx);
+      setInput(idx === -1 ? '' : (history[idx] ?? ''));
+    }
+  };
+
   return (
     <View style={{ flex: 1, backgroundColor: '#0a0c0f' }}>
       <ModuleHeader title="Terminal" onBack={() => go('__back')} />
-      <ScrollView style={{ flex: 1, paddingHorizontal: 14 }}>
+      <ScrollView ref={scrollRef} style={{ flex: 1, paddingHorizontal: 14 }}
+        contentContainerStyle={{ paddingBottom: 12 }}>
         {lines.map((l, i) => (
-          <Text key={i} style={{ fontFamily: FONTS.mono, fontSize: 13, color: l.includes('not available') ? C.danger : C.text, lineHeight: 22 }}>{l}</Text>
+          <Text key={i} style={{
+            fontFamily: FONTS.mono, fontSize: 12.5, lineHeight: 21,
+            color: l.type === 'error' ? C.danger : l.type === 'prompt' ? C.ok : C.text,
+          }}>{l.text}</Text>
         ))}
+        {busy && <Text style={{ fontFamily: FONTS.mono, fontSize: 12.5, color: C.textFaint, lineHeight: 21 }}>…</Text>}
       </ScrollView>
-      <View style={{ flexDirection: 'row', padding: 12, gap: 10, borderTopWidth: 1, borderTopColor: C.border }}>
+      <View style={{ flexDirection: 'row', padding: 10, gap: 8, borderTopWidth: 1, borderTopColor: C.border,
+        backgroundColor: '#0d1117' }}>
         <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', backgroundColor: C.surface2,
           borderRadius: 10, paddingHorizontal: 12, borderWidth: 1, borderColor: C.border }}>
           <Text style={{ fontFamily: FONTS.mono, fontSize: 13, color: C.ok }}>$ </Text>
           <TextInput value={input} onChangeText={setInput} onSubmitEditing={send}
+            onKeyPress={onKeyPress}
             style={{ flex: 1, fontFamily: FONTS.mono, fontSize: 13, color: C.text, height: 42 }}
             placeholderTextColor={C.textFaint} placeholder="Wpisz polecenie…"
-            autoCapitalize="none" autoCorrect={false} />
+            autoCapitalize="none" autoCorrect={false} returnKeyType="send"
+            editable={!busy} />
         </View>
-        <TouchableOpacity onPress={send} activeOpacity={0.8}
-          style={{ width: 42, height: 42, borderRadius: 10, backgroundColor: C.accent,
+        <TouchableOpacity onPress={send} disabled={busy} activeOpacity={0.8}
+          style={{ width: 42, height: 42, borderRadius: 10, backgroundColor: busy ? C.surface2 : C.accent,
             alignItems: 'center', justifyContent: 'center' }}>
-          <NbIcon name="arrow_up" size={18} color="#08111c" />
+          {busy
+            ? <ActivityIndicator size="small" color={C.textFaint} />
+            : <NbIcon name="arrow_up" size={18} color="#08111c" />}
         </TouchableOpacity>
       </View>
     </View>
@@ -808,12 +1043,56 @@ function TerminalScreen({ go }: any) {
 }
 
 // ── Settings ──────────────────────────────────────────────────────────────────
+const ACCENT_PRESETS = [
+  { label: 'Niebieski', color: '#3b9eff' },
+  { label: 'Fioletowy', color: '#a78bfa' },
+  { label: 'Zielony',   color: '#2dd4a7' },
+  { label: 'Pomarańcz', color: '#f5a623' },
+  { label: 'Czerwony',  color: '#ff5d5d' },
+];
+
+const LANGUAGE_OPTIONS = [
+  { label: 'Polski', value: 'pl' },
+  { label: 'English', value: 'en' },
+];
+
 function SettingsScreen({ go, onLogout, serverUrl, username }: any) {
   const { data: overview } = useApi(apiOverview, null);
+  const [lang, setLang] = useState<string>('pl');
+  const [accentColor, setAccentColor] = useState<string>(C.accent);
+
+  useEffect(() => {
+    // Load saved settings
+    (async () => {
+      try {
+        const saved = await AsyncStorage.getItem('nimbus_settings');
+        if (saved) {
+          const s = JSON.parse(saved);
+          if (s.lang) setLang(s.lang);
+          if (s.accentColor) setAccentColor(s.accentColor);
+        }
+      } catch {}
+    })();
+  }, []);
+
+  const save = async (newLang?: string, newAccent?: string) => {
+    const settings = {
+      lang: newLang ?? lang,
+      accentColor: newAccent ?? accentColor,
+    };
+    try { await AsyncStorage.setItem('nimbus_settings', JSON.stringify(settings)); } catch {}
+  };
+
+  const setLanguage = (val: string) => { setLang(val); save(val, undefined); };
+  const setAccent = (val: string) => { setAccentColor(val); save(undefined, val); };
+
   return (
     <ScrollView contentContainerStyle={{ paddingBottom: 24 }}>
       <ModuleHeader title="Ustawienia" onBack={() => go('__back')} />
       <View style={{ paddingHorizontal: 16 }}>
+
+        {/* Server info */}
+        <SectionTitle>Serwer</SectionTitle>
         <Card pad={6}>
           <View style={{ paddingHorizontal: 12 }}>
             <Row icon="server" iconTone="accent" title="Serwer" sub={serverUrl} />
@@ -832,6 +1111,56 @@ function SettingsScreen({ go, onLogout, serverUrl, username }: any) {
             </>
           )}
         </Card>
+
+        {/* Interface */}
+        <View style={{ height: 24 }} />
+        <SectionTitle>Interfejs</SectionTitle>
+        <Card pad={14}>
+          <Text style={{ fontFamily: FONTS.bold, fontSize: 13, color: C.textFaint, marginBottom: 10 }}>Język</Text>
+          <View style={{ flexDirection: 'row', gap: 10 }}>
+            {LANGUAGE_OPTIONS.map(opt => (
+              <TouchableOpacity key={opt.value} onPress={() => setLanguage(opt.value)} activeOpacity={0.8}
+                style={{ flex: 1, paddingVertical: 10, borderRadius: 10, alignItems: 'center',
+                  backgroundColor: lang === opt.value ? C.accentDim : C.surface2,
+                  borderWidth: 1, borderColor: lang === opt.value ? C.accent : C.border }}>
+                <Text style={{ fontFamily: FONTS.semibold, fontSize: 14,
+                  color: lang === opt.value ? C.accent : C.textDim }}>{opt.label}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          <View style={{ height: 16 }} />
+          <Text style={{ fontFamily: FONTS.bold, fontSize: 13, color: C.textFaint, marginBottom: 10 }}>Motyw</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8,
+            paddingHorizontal: 12, backgroundColor: C.surface2, borderRadius: 10, borderWidth: 1, borderColor: C.border }}>
+            <NbIcon name="eye" size={16} color={C.textDim} />
+            <Text style={{ fontFamily: FONTS.semibold, fontSize: 14, color: C.textDim, flex: 1 }}>Ciemny</Text>
+            <Pill tone="ok">
+              <Text style={{ fontFamily: FONTS.monobold, fontSize: 10, color: C.ok }}>AKTYWNY</Text>
+            </Pill>
+          </View>
+        </Card>
+
+        {/* Appearance */}
+        <View style={{ height: 24 }} />
+        <SectionTitle>Wygląd</SectionTitle>
+        <Card pad={14}>
+          <Text style={{ fontFamily: FONTS.bold, fontSize: 13, color: C.textFaint, marginBottom: 12 }}>Kolor akcentu</Text>
+          <View style={{ flexDirection: 'row', gap: 12, flexWrap: 'wrap' }}>
+            {ACCENT_PRESETS.map(preset => (
+              <TouchableOpacity key={preset.color} onPress={() => setAccent(preset.color)} activeOpacity={0.8}
+                style={{ alignItems: 'center', gap: 6 }}>
+                <View style={{ width: 44, height: 44, borderRadius: 12, backgroundColor: preset.color,
+                  borderWidth: accentColor === preset.color ? 3 : 1.5,
+                  borderColor: accentColor === preset.color ? C.text : 'transparent',
+                  alignItems: 'center', justifyContent: 'center' }}>
+                  {accentColor === preset.color && <NbIcon name="check" size={18} color="#fff" />}
+                </View>
+                <Text style={{ fontFamily: FONTS.regular, fontSize: 11, color: C.textFaint }}>{preset.label}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </Card>
+
         <View style={{ height: 24 }} />
         <TouchableOpacity onPress={onLogout} activeOpacity={0.8}
           style={{ height: 54, borderRadius: 14, backgroundColor: C.dangerDim,
