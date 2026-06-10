@@ -6,7 +6,7 @@ import {
 } from 'react-native';
 import { C, FONTS } from '../tokens';
 import { NbIcon, PrimaryBtn, Toggle } from '../components/ui';
-import { apiLogin } from '../api';
+import { apiLogin, apiVerifyTotp } from '../api';
 
 // ── NimbusLogo ───────────────────────────────────────────────────────────────
 function NimbusLogo({ size = 58 }: { size?: number }) {
@@ -148,16 +148,16 @@ export default function LoginScreen({ onSuccess, savedServerUrl, savedUsername, 
       const { initApi } = await import('../api');
       initApi(base, '');
       const data = await apiLogin(user, pass);
-      const tok = data.token ?? '';
-      pendingToken.current = tok;
-      // If backend returns a token and potentially requires 2FA, go to 2FA
-      // Otherwise login directly
-      if (data.requires2fa || data.twoFactor) {
+      // Backend returns needs_2fa + tmp_token when TOTP is enabled
+      if (data.needs_2fa && data.tmp_token) {
+        pendingToken.current = data.tmp_token;
         setLoading(false);
         setStage('2fa');
-      } else {
+      } else if (data.success) {
         setDone(true);
-        setTimeout(() => onSuccess(base, user, pass, tok), 600);
+        setTimeout(() => onSuccess(base, user, pass, ''), 600);
+      } else {
+        throw new Error('Logowanie nieudane');
       }
     } catch (e: any) {
       setErrMsg(e?.message ?? 'Błąd logowania');
@@ -165,13 +165,20 @@ export default function LoginScreen({ onSuccess, savedServerUrl, savedUsername, 
     }
   };
 
-  const verify = () => {
+  const verify = async () => {
     if (code.length < 6) { setCodeErr(true); return; }
     setLoading(true);
-    setTimeout(() => {
-      setLoading(false); setDone(true);
-      setTimeout(() => onSuccess(buildBase(), user, pass, pendingToken.current), 600);
-    }, 850);
+    try {
+      const data = await apiVerifyTotp(pendingToken.current, code);
+      if (data.success) {
+        setLoading(false); setDone(true);
+        setTimeout(() => onSuccess(buildBase(), user, pass, ''), 600);
+      } else {
+        setCodeErr(true); setLoading(false);
+      }
+    } catch {
+      setCodeErr(true); setLoading(false);
+    }
   };
 
   const finishBio = () => {
