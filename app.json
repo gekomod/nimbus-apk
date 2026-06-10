@@ -31,6 +31,7 @@
     },
     "plugins": [
       "./plugins/withJava17",
+      "./plugins/withCleartextHttp",
       [
         "expo-build-properties",
         {
